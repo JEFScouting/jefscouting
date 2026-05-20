@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Contact — JEF Scouting</title>
+<meta name="description" content="Contact JEF Scouting to book vetted FOH, BOH & Event staff." />
+<link rel="icon" type="image/png" href="/static/favicon.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header class="site-header">
+  <div class="container nav">
+    <a class="brand" href="/"><img src="/static/logo.png" alt="JEF" /><span>JEF Scouting</span></a>
+    <nav class="menu" aria-label="Main">
+      <a href="/services.html">Services</a>
+      <a href="/clients.html">Clients</a>
+      <a class="btn btn-gold" href="/contact.html">Request Staff</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<section class="hero" style="min-height:52vh;">
+  <div class="bg" style="background-image:url('https://images.unsplash.com/photo-1522771739844-6a9f6d5f14af?q=80&w=2000&auto=format&fit=crop');"></div>
+  <div class="container">
+    <span class="eyebrow">Start now</span>
+    <h1>Contact</h1>
+    <p class="lead">Let’s build your perfect team.</p>
+    <div style="display:flex;gap:.75rem;flex-wrap:wrap">
+      <a class="btn btn-gold" href="https://calendly.com/jefscouting/30min" target="_blank" rel="noopener">Book a Call</a>
+      <a class="btn btn-ghost" href="https://wa.me/17867226376?text=Hi%20JEF%20Scouting,%20I'd%20like%20to%20request%20staff" target="_blank" rel="noopener">WhatsApp</a>
+    </div>
+  </div>
+</section>
+<section class="section">
+  <div class="container split">
+    <div>
+      <h2>Business Info</h2>
+      <p class="muted">Phone: <a href="tel:+17867226376">+1 (786) 722-6376</a><br>Email: <a href="mailto:info@jefscouting.com">info@jefscouting.com</a></p>
+      <p class="muted">Service area: Miami & Broward · Hours: 8am–6pm (after-hours by request)</p>
+    </div>
+    <form class="contact" name="contact" method="POST" data-netlify="true" netlify-honeypot="bot-field">
+      <input type="hidden" name="form-name" value="contact" />
+      <p hidden><label>Don’t fill this: <input name="bot-field"></label></p>
+      <label>Name</label>
+      <input required name="name" placeholder="Your name" />
+      <label>Email</label>
+      <input required name="email" type="email" placeholder="you@example.com" />
+      <label>Message</label>
+      <textarea name="message" rows="6" placeholder="Tell us about your staffing needs..."></textarea>
+      <button class="btn btn-gold" type="submit">Send</button>
+    </form>
+  </div>
+</section>
+</main>
+<footer class="site-footer minimal">
+  <div class="container">
+    <p class="credits">© JEF Scouting. All rights reserved.</p>
+  </div>
+  <div class="fixed-logo" aria-hidden="true"><img src="/static/logo.png" alt="JEF Scouting" /></div>
+</footer>
+<script src="/app.js"></script>
+
+</body></html>
