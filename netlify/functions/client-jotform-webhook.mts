@@ -1,7 +1,3 @@
-
-  };
-};
-
 const EXPECTED_FORM_ID = "262081932367056";
 const ADAPTER_ID = "NETLIFY|jefscouting|client-jotform-webhook";
 
