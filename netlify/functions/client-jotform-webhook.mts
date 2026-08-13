@@ -65,7 +65,8 @@ export default async (req: Request) => {
       sourceEventId: submissionId,
       sourceEventKey,
       clientRequestIdentityKey: `CLIENTREQ|${sourceEventKey}`,
-      sourceTimestamp: sourceTimestamp || null,
+      sourceTimestamp =
+new Date(Number(rawRequest.submitDate)).toISOString()
       reconciliationTimestamp: new Date().toISOString(),
       provenance: {
         adapter: ADAPTER_ID,
