@@ -1,6 +1,7 @@
 const JOTFORM_API_BASE = "https://api.jotform.com";
 
 // Explicit canonical JEF allowlist. Unknown form IDs fail closed.
+// Non-production UAT only; this adapter remains GET-only and mutation-disabled.
 const ALLOWED_FORM_IDS = new Set([
   "262081932367056", // Client Staffing Request Master / existing production adapter form
   "262220138013037", // JEF Staffing Service Order
