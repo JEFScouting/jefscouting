@@ -8,7 +8,7 @@ const ALLOWED_FORM_IDS = new Set([
   "261713499954067", // JEF Barista Availability Check — Sept 28–Oct 1 South Florida Event
 ]);
 
-const ALLOWED_RESOURCES = new Set(["form", "questions", "webhooks"]);
+const ALLOWED_RESOURCES = new Set(["form", "questions", "webhooks", "properties"]);
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, {
