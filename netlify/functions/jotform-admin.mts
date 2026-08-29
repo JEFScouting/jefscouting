@@ -1,8 +1,10 @@
 const JOTFORM_API_BASE = "https://api.jotform.com";
 
-// Start deliberately narrow. Expand only after each canonical form ID is verified.
+// Explicit canonical JEF allowlist. Unknown form IDs fail closed.
 const ALLOWED_FORM_IDS = new Set([
-  "262081932367056",
+  "262081932367056", // Client Staffing Request Master / existing production adapter form
+  "262220138013037", // JEF Staffing Service Order
+  "261713499954067", // JEF Barista Availability Check — Sept 28–Oct 1 South Florida Event
 ]);
 
 const ALLOWED_RESOURCES = new Set(["form", "questions", "webhooks"]);
