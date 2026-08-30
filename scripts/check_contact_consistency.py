@@ -14,7 +14,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
-PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d[\d(). -]{7,}\d)(?!\w)")
+PHONE_RE = re.compile(
+    r"(?<!\w)(?:\+?\d[\d(). \t\u00a0\u2011\u2013\u2014\u202f-]{7,}\d)(?!\w)"
+)
 EXPECTED_CONTACTS = {
     "phone": "+13058900766",
     "email": "hello@jefscouting.com",

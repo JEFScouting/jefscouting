@@ -36,6 +36,17 @@ class ContactParserTests(unittest.TestCase):
         self.assertIn(("phone", "+1 305-890-0766"), contacts)
         self.assertIn(("email", "hello@jefscouting.com"), contacts)
 
+    def test_extracts_phones_with_typographic_separators(self) -> None:
+        contacts = self.parse(
+            "<p>+1 786–722–6376</p>"
+            "<p>+1&nbsp;786&nbsp;722&nbsp;6376</p>"
+            "<p>+1\u202f786\u2011722\u20146376</p>"
+        )
+
+        self.assertIn(("phone", "+1 786–722–6376"), contacts)
+        self.assertIn(("phone", "+1\u00a0786\u00a0722\u00a06376"), contacts)
+        self.assertIn(("phone", "+1\u202f786\u2011722\u20146376"), contacts)
+
     def test_ignores_form_placeholders(self) -> None:
         contacts = self.parse('<input type="email" placeholder="you@example.com">')
 
