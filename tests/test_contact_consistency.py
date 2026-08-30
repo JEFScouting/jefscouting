@@ -50,6 +50,26 @@ class ContactParserTests(unittest.TestCase):
 
         self.assertNotIn(("phone", "2026-08-30"), contacts)
 
+    def test_extracts_contact_links_from_supported_hosts_and_schemes(self) -> None:
+        contacts = self.parse(
+            '<a href="https://wa.me/13058900766">WhatsApp</a>'
+            '<a href="https://whatsapp.com/send?phone=13058900766">WhatsApp</a>'
+            '<a href="https://api.whatsapp.com/send?phone=13058900766">WhatsApp</a>'
+            '<a href="tel:+13058900766">Phone</a>'
+            '<a href="mailto:hello@jefscouting.com">Email</a>'
+        )
+
+        self.assertEqual(contacts.count(("phone", "13058900766")), 3)
+        self.assertIn(("phone", "+13058900766"), contacts)
+        self.assertIn(("email", "hello@jefscouting.com"), contacts)
+
+    def test_ignores_whatsapp_lookalike_domains(self) -> None:
+        contacts = self.parse(
+            '<a href="https://fakewhatsapp.com/send?phone=17867226376">External</a>'
+        )
+
+        self.assertNotIn(("phone", "17867226376"), contacts)
+
 
 if __name__ == "__main__":
     unittest.main()

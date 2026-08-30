@@ -47,13 +47,14 @@ class ContactParser(HTMLParser):
         href = attributes.get("href")
         if href:
             parsed = urlparse(unquote(href))
+            hostname = (parsed.hostname or "").lower()
             if parsed.scheme == "mailto":
                 self.contacts.append(("email", parsed.path))
             elif parsed.scheme == "tel":
                 self.contacts.append(("phone", parsed.path))
-            elif parsed.netloc.lower() in {"wa.me", "www.wa.me"}:
+            elif hostname in {"wa.me", "www.wa.me"}:
                 self.contacts.append(("phone", parsed.path.strip("/").split("/")[0]))
-            elif parsed.netloc.lower().endswith("whatsapp.com"):
+            elif hostname == "whatsapp.com" or hostname.endswith(".whatsapp.com"):
                 phone = parse_qs(parsed.query).get("phone", [])
                 if phone:
                     self.contacts.append(("phone", phone[0]))
