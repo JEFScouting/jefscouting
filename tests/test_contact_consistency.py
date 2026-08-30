@@ -45,6 +45,11 @@ class ContactParserTests(unittest.TestCase):
         self.assertNotIn(("phone", "2026-08-30"), contacts)
         self.assertNotIn(("phone", "1234567890"), contacts)
 
+    def test_ignores_visible_iso_dates(self) -> None:
+        contacts = self.parse('<time datetime="2026-08-30">2026-08-30</time>')
+
+        self.assertNotIn(("phone", "2026-08-30"), contacts)
+
 
 if __name__ == "__main__":
     unittest.main()

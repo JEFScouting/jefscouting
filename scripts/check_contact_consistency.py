@@ -81,7 +81,11 @@ class ContactParser(HTMLParser):
     def _extract_text_contacts(self, data: str, *, include_phone: bool = True) -> None:
         self.contacts.extend(("email", value) for value in EMAIL_RE.findall(data))
         if include_phone:
-            self.contacts.extend(("phone", value) for value in PHONE_RE.findall(data))
+            self.contacts.extend(
+                ("phone", value)
+                for value in PHONE_RE.findall(data)
+                if 10 <= len(re.sub(r"\D", "", value)) <= 15
+            )
 
 
 def public_html_files() -> list[Path]:
