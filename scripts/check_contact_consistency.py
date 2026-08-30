@@ -41,9 +41,16 @@ class ContactParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.contacts: list[tuple[str, str]] = []
+        self._include_raw_text_phone: bool | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
+        if tag == "script":
+            script_type = attributes.get("type", "").partition(";")[0].strip().lower()
+            self._include_raw_text_phone = script_type == "application/ld+json"
+        elif tag == "style":
+            self._include_raw_text_phone = False
+
         href = attributes.get("href")
         if href:
             parsed = urlparse(unquote(href))
@@ -77,7 +84,14 @@ class ContactParser(HTMLParser):
                 )
 
     def handle_data(self, data: str) -> None:
-        self._extract_text_contacts(data)
+        self._extract_text_contacts(
+            data,
+            include_phone=self._include_raw_text_phone is not False,
+        )
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style"}:
+            self._include_raw_text_phone = None
 
     def _extract_text_contacts(self, data: str, *, include_phone: bool = True) -> None:
         self.contacts.extend(("email", value) for value in EMAIL_RE.findall(data))

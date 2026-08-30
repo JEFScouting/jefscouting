@@ -70,6 +70,30 @@ class ContactParserTests(unittest.TestCase):
 
         self.assertNotIn(("phone", "17867226376"), contacts)
 
+    def test_ignores_numeric_values_in_javascript(self) -> None:
+        contacts = self.parse("<script>const buildTimestamp = 1700000000000;</script>")
+
+        self.assertNotIn(("phone", "1700000000000"), contacts)
+
+    def test_extracts_contacts_from_json_ld(self) -> None:
+        contacts = self.parse(
+            '<script type="application/ld+json">'
+            '{"telephone":"+1 305-890-0766","email":"hello@jefscouting.com"}'
+            "</script>"
+        )
+
+        self.assertIn(("phone", "+1 305-890-0766"), contacts)
+        self.assertIn(("email", "hello@jefscouting.com"), contacts)
+
+    def test_resumes_phone_extraction_after_script(self) -> None:
+        contacts = self.parse(
+            "<script>const buildTimestamp = 1700000000000;</script>"
+            "<p>Call +1 305-890-0766</p>"
+        )
+
+        self.assertNotIn(("phone", "1700000000000"), contacts)
+        self.assertIn(("phone", "+1 305-890-0766"), contacts)
+
 
 if __name__ == "__main__":
     unittest.main()
