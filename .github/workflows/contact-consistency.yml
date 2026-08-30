@@ -12,5 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test contact checker
+        run: python3 -m unittest discover -s tests
       - name: Check public contact values
         run: python3 scripts/check_contact_consistency.py

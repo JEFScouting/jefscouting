@@ -19,6 +19,7 @@ EXPECTED_CONTACTS = {
     "phone": "+13058900766",
     "email": "hello@jefscouting.com",
 }
+PUBLIC_CONTACT_ATTRIBUTES = {"aria-label", "content", "title"}
 
 
 class ContactParser(HTMLParser):
@@ -28,22 +29,27 @@ class ContactParser(HTMLParser):
 
     def handle_starttag(self, _tag: str, attrs: list[tuple[str, str | None]]) -> None:
         href = dict(attrs).get("href")
-        if not href:
-            return
+        if href:
+            parsed = urlparse(unquote(href))
+            if parsed.scheme == "mailto":
+                self.contacts.append(("email", parsed.path))
+            elif parsed.scheme == "tel":
+                self.contacts.append(("phone", parsed.path))
+            elif parsed.netloc.lower() in {"wa.me", "www.wa.me"}:
+                self.contacts.append(("phone", parsed.path.strip("/").split("/")[0]))
+            elif parsed.netloc.lower().endswith("whatsapp.com"):
+                phone = parse_qs(parsed.query).get("phone", [])
+                if phone:
+                    self.contacts.append(("phone", phone[0]))
 
-        parsed = urlparse(unquote(href))
-        if parsed.scheme == "mailto":
-            self.contacts.append(("email", parsed.path))
-        elif parsed.scheme == "tel":
-            self.contacts.append(("phone", parsed.path))
-        elif parsed.netloc.lower() in {"wa.me", "www.wa.me"}:
-            self.contacts.append(("phone", parsed.path.strip("/").split("/")[0]))
-        elif parsed.netloc.lower().endswith("whatsapp.com"):
-            phone = parse_qs(parsed.query).get("phone", [])
-            if phone:
-                self.contacts.append(("phone", phone[0]))
+        for name, value in attrs:
+            if value and (name in PUBLIC_CONTACT_ATTRIBUTES or name.startswith("data-")):
+                self._extract_text_contacts(value)
 
     def handle_data(self, data: str) -> None:
+        self._extract_text_contacts(data)
+
+    def _extract_text_contacts(self, data: str) -> None:
         self.contacts.extend(("email", value) for value in EMAIL_RE.findall(data))
         self.contacts.extend(("phone", value) for value in PHONE_RE.findall(data))
 
