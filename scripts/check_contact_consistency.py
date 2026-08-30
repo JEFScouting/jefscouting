@@ -21,12 +21,19 @@ EXPECTED_CONTACTS = {
 }
 PUBLIC_CONTACT_ATTRIBUTES = {
     "aria-label",
-    "content",
     "data-contact",
     "data-email",
     "data-phone",
     "data-whatsapp",
     "title",
+}
+PHONE_METADATA_FIELDS = {
+    "contact",
+    "description",
+    "og:description",
+    "phone",
+    "telephone",
+    "twitter:description",
 }
 
 
@@ -35,8 +42,9 @@ class ContactParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.contacts: list[tuple[str, str]] = []
 
-    def handle_starttag(self, _tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        href = dict(attrs).get("href")
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        href = attributes.get("href")
         if href:
             parsed = urlparse(unquote(href))
             if parsed.scheme == "mailto":
@@ -53,13 +61,27 @@ class ContactParser(HTMLParser):
         for name, value in attrs:
             if value and name in PUBLIC_CONTACT_ATTRIBUTES:
                 self._extract_text_contacts(value)
+            elif value and name == "content":
+                metadata_field = next(
+                    (
+                        attributes.get(field, "").lower()
+                        for field in ("name", "property", "itemprop")
+                        if attributes.get(field)
+                    ),
+                    "",
+                )
+                self._extract_text_contacts(
+                    value,
+                    include_phone=tag == "meta" and metadata_field in PHONE_METADATA_FIELDS,
+                )
 
     def handle_data(self, data: str) -> None:
         self._extract_text_contacts(data)
 
-    def _extract_text_contacts(self, data: str) -> None:
+    def _extract_text_contacts(self, data: str, *, include_phone: bool = True) -> None:
         self.contacts.extend(("email", value) for value in EMAIL_RE.findall(data))
-        self.contacts.extend(("phone", value) for value in PHONE_RE.findall(data))
+        if include_phone:
+            self.contacts.extend(("phone", value) for value in PHONE_RE.findall(data))
 
 
 def public_html_files() -> list[Path]:

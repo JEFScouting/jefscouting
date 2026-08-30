@@ -36,6 +36,15 @@ class ContactParserTests(unittest.TestCase):
 
         self.assertNotIn(("phone", "1234567890"), contacts)
 
+    def test_ignores_dates_and_ids_in_unrelated_metadata(self) -> None:
+        contacts = self.parse(
+            '<meta property="article:published_time" content="2026-08-30">'
+            '<meta name="build" content="1234567890">'
+        )
+
+        self.assertNotIn(("phone", "2026-08-30"), contacts)
+        self.assertNotIn(("phone", "1234567890"), contacts)
+
 
 if __name__ == "__main__":
     unittest.main()
