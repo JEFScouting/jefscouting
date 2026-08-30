@@ -60,6 +60,9 @@ class ContactParserTests(unittest.TestCase):
         contacts = self.parse(
             "<p>+1 (786)</p><p>722-6376</p>"
             "<div>info@</div><div>jefscouting.com</div>"
+            "<pre>+1 (786)</pre><pre>722-6376</pre>"
+            "<dl><dt>+1 (786)</dt><dd>722-6376</dd></dl>"
+            "<figure>info@</figure><figcaption>jefscouting.com</figcaption>"
         )
 
         self.assertNotIn(("phone", "+1 (786)722-6376"), contacts)
