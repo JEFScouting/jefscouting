@@ -56,6 +56,15 @@ class ContactParserTests(unittest.TestCase):
         self.assertIn(("phone", "+1 (786) 722-6376"), contacts)
         self.assertIn(("email", "info@jefscouting.com"), contacts)
 
+    def test_extracts_contacts_split_by_word_break_opportunities(self) -> None:
+        contacts = self.parse(
+            "<p>+1 (786)<wbr> 722-6376</p>"
+            "<p>info@<wbr>jefscouting.com</p>"
+        )
+
+        self.assertIn(("phone", "+1 (786) 722-6376"), contacts)
+        self.assertIn(("email", "info@jefscouting.com"), contacts)
+
     def test_does_not_join_contacts_across_block_boundaries(self) -> None:
         contacts = self.parse(
             "<p>+1 (786)</p><p>722-6376</p>"

@@ -40,9 +40,13 @@ PHONE_METADATA_FIELDS = {
 INLINE_TEXT_TAGS = {
     "abbr",
     "b",
+    "bdi",
+    "bdo",
     "cite",
     "code",
+    "data",
     "del",
+    "dfn",
     "em",
     "i",
     "ins",
@@ -50,6 +54,9 @@ INLINE_TEXT_TAGS = {
     "label",
     "mark",
     "q",
+    "rp",
+    "rt",
+    "ruby",
     "s",
     "samp",
     "small",
@@ -60,6 +67,7 @@ INLINE_TEXT_TAGS = {
     "time",
     "u",
     "var",
+    "wbr",
 }
 
 
