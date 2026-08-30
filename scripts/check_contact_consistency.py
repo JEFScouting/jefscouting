@@ -19,7 +19,15 @@ EXPECTED_CONTACTS = {
     "phone": "+13058900766",
     "email": "hello@jefscouting.com",
 }
-PUBLIC_CONTACT_ATTRIBUTES = {"aria-label", "content", "title"}
+PUBLIC_CONTACT_ATTRIBUTES = {
+    "aria-label",
+    "content",
+    "data-contact",
+    "data-email",
+    "data-phone",
+    "data-whatsapp",
+    "title",
+}
 
 
 class ContactParser(HTMLParser):
@@ -43,7 +51,7 @@ class ContactParser(HTMLParser):
                     self.contacts.append(("phone", phone[0]))
 
         for name, value in attrs:
-            if value and (name in PUBLIC_CONTACT_ATTRIBUTES or name.startswith("data-")):
+            if value and name in PUBLIC_CONTACT_ATTRIBUTES:
                 self._extract_text_contacts(value)
 
     def handle_data(self, data: str) -> None:

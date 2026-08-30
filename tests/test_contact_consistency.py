@@ -31,6 +31,11 @@ class ContactParserTests(unittest.TestCase):
 
         self.assertNotIn(("email", "you@example.com"), contacts)
 
+    def test_ignores_unrelated_numeric_data_attributes(self) -> None:
+        contacts = self.parse('<div data-event-id="1234567890"></div>')
+
+        self.assertNotIn(("phone", "1234567890"), contacts)
+
 
 if __name__ == "__main__":
     unittest.main()
