@@ -1,6 +1,16 @@
+import io
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
 
-from scripts.check_contact_consistency import ContactParser
+from scripts.check_contact_consistency import (
+    ContactParser,
+    collect_contacts,
+    invalid_contacts,
+    main,
+)
 
 
 class ContactParserTests(unittest.TestCase):
@@ -93,6 +103,93 @@ class ContactParserTests(unittest.TestCase):
 
         self.assertNotIn(("phone", "1700000000000"), contacts)
         self.assertIn(("phone", "+1 305-890-0766"), contacts)
+
+
+class RepositoryValidationTests(unittest.TestCase):
+    def validate(self, pages: dict[str, str]) -> dict[str, dict[str, set[str]]]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = []
+            for name, html in pages.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(html, encoding="utf-8")
+                files.append(path)
+            return invalid_contacts(collect_contacts(files, root))
+
+    def test_accepts_only_approved_contacts(self) -> None:
+        invalid = self.validate(
+            {
+                "index.html": (
+                    '<a href="tel:+13058900766">Phone</a>'
+                    '<a href="mailto:hello@jefscouting.com">Email</a>'
+                )
+            }
+        )
+
+        self.assertEqual(invalid, {})
+
+    def test_rejects_uniformly_unapproved_contacts(self) -> None:
+        invalid = self.validate(
+            {
+                "index.html": (
+                    '<a href="tel:+17867226376">Phone</a>'
+                    '<a href="mailto:info@jefscouting.com">Email</a>'
+                ),
+                "es/index.html": (
+                    '<a href="tel:+17867226376">Teléfono</a>'
+                    '<a href="mailto:info@jefscouting.com">Correo</a>'
+                ),
+            }
+        )
+
+        self.assertEqual(set(invalid["phone"]), {"+17867226376"})
+        self.assertEqual(set(invalid["email"]), {"info@jefscouting.com"})
+
+    def test_rejects_missing_and_conflicting_contacts(self) -> None:
+        missing = self.validate(
+            {"index.html": '<a href="tel:+13058900766">Phone</a>'}
+        )
+        conflicting = self.validate(
+            {
+                "index.html": (
+                    '<a href="tel:+13058900766">Phone</a>'
+                    '<a href="mailto:hello@jefscouting.com">Email</a>'
+                    '<a href="mailto:info@jefscouting.com">Other email</a>'
+                )
+            }
+        )
+
+        self.assertEqual(missing["email"], {})
+        self.assertEqual(
+            set(conflicting["email"]),
+            {"hello@jefscouting.com", "info@jefscouting.com"},
+        )
+
+    def test_main_reports_unapproved_values_and_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            page = root / "legacy.html"
+            page.write_text(
+                '<a href="tel:+17867226376">Phone</a>'
+                '<a href="mailto:info@jefscouting.com">Email</a>',
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with (
+                patch("scripts.check_contact_consistency.ROOT", root),
+                patch(
+                    "scripts.check_contact_consistency.public_html_files",
+                    return_value=[page],
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = main()
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("+17867226376 (unapproved)", output.getvalue())
+        self.assertIn("info@jefscouting.com (unapproved)", output.getvalue())
+        self.assertIn("- legacy.html", output.getvalue())
 
 
 if __name__ == "__main__":

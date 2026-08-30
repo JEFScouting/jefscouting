@@ -121,12 +121,13 @@ def normalize(kind: str, value: str) -> str | None:
     return f"+{digits}" if digits else None
 
 
-def main() -> int:
+def collect_contacts(
+    files: list[Path], root: Path
+) -> dict[str, dict[str, set[str]]]:
     found: dict[str, dict[str, set[str]]] = {
         "phone": defaultdict(set),
         "email": defaultdict(set),
     }
-    files = public_html_files()
 
     for path in files:
         parser = ContactParser()
@@ -134,13 +135,26 @@ def main() -> int:
         for kind, raw_value in parser.contacts:
             value = normalize(kind, raw_value)
             if value:
-                found[kind][value].add(str(path.relative_to(ROOT)))
+                found[kind][value].add(str(path.relative_to(root)))
 
-    invalid = {
+    return found
+
+
+def invalid_contacts(
+    found: dict[str, dict[str, set[str]]],
+) -> dict[str, dict[str, set[str]]]:
+    return {
         kind: values
         for kind, values in found.items()
         if set(values) != {EXPECTED_CONTACTS[kind]}
     }
+
+
+def main() -> int:
+    files = public_html_files()
+    found = collect_contacts(files, ROOT)
+
+    invalid = invalid_contacts(found)
     if not invalid:
         print(
             f"Contact consistency check passed across {len(files)} public HTML files: "
