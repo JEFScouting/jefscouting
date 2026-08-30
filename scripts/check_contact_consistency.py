@@ -37,6 +37,37 @@ PHONE_METADATA_FIELDS = {
     "telephone",
     "twitter:description",
 }
+TEXT_BOUNDARY_TAGS = {
+    "a",
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "br",
+    "button",
+    "div",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "section",
+    "table",
+    "td",
+    "th",
+    "tr",
+    "ul",
+}
 
 
 class ContactParser(HTMLParser):
@@ -44,9 +75,12 @@ class ContactParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.contacts: list[tuple[str, str]] = []
         self._include_raw_text_phone: bool | None = None
+        self._visible_text_tail = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
+        if tag in TEXT_BOUNDARY_TAGS or tag in {"script", "style"}:
+            self._visible_text_tail = ""
         if tag == "script":
             script_type = attributes.get("type", "").partition(";")[0].strip().lower()
             self._include_raw_text_phone = script_type == "application/ld+json"
@@ -86,14 +120,21 @@ class ContactParser(HTMLParser):
                 )
 
     def handle_data(self, data: str) -> None:
-        self._extract_text_contacts(
-            data,
-            include_phone=self._include_raw_text_phone is not False,
-        )
+        if self._include_raw_text_phone is None:
+            combined = self._visible_text_tail + data
+            self._extract_text_contacts(combined)
+            self._visible_text_tail = combined[-128:]
+        else:
+            self._extract_text_contacts(
+                data,
+                include_phone=self._include_raw_text_phone,
+            )
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style"}:
             self._include_raw_text_phone = None
+        if tag in TEXT_BOUNDARY_TAGS or tag in {"script", "style"}:
+            self._visible_text_tail = ""
 
     def _extract_text_contacts(self, data: str, *, include_phone: bool = True) -> None:
         self.contacts.extend(("email", value) for value in EMAIL_RE.findall(data))

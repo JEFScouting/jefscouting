@@ -47,6 +47,24 @@ class ContactParserTests(unittest.TestCase):
         self.assertIn(("phone", "+1\u00a0786\u00a0722\u00a06376"), contacts)
         self.assertIn(("phone", "+1\u202f786\u2011722\u20146376"), contacts)
 
+    def test_extracts_contacts_split_across_inline_elements(self) -> None:
+        contacts = self.parse(
+            "<p><span>+1 (786)</span> <span>722-6376</span></p>"
+            "<p>info@<span>jefscouting.com</span></p>"
+        )
+
+        self.assertIn(("phone", "+1 (786) 722-6376"), contacts)
+        self.assertIn(("email", "info@jefscouting.com"), contacts)
+
+    def test_does_not_join_contacts_across_block_boundaries(self) -> None:
+        contacts = self.parse(
+            "<p>+1 (786)</p><p>722-6376</p>"
+            "<div>info@</div><div>jefscouting.com</div>"
+        )
+
+        self.assertNotIn(("phone", "+1 (786)722-6376"), contacts)
+        self.assertNotIn(("email", "info@jefscouting.com"), contacts)
+
     def test_ignores_form_placeholders(self) -> None:
         contacts = self.parse('<input type="email" placeholder="you@example.com">')
 
