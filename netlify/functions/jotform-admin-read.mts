@@ -11,9 +11,9 @@ export default async (req: Request) => {
   }
 
   const apiKey = Netlify.env.get("JOTFORM_API_KEY");
-  const adminToken = Netlify.env.get("JOTFORM_ADMIN_TOKEN");
+  const adminSecret = Netlify.env.get("JOTFORM_ADMIN_SECRET");
 
-  if (!apiKey || !adminToken) {
+  if (!apiKey || !adminSecret) {
     return Response.json(
       { success: false, error: "Jotform admin runtime is not configured" },
       { status: 503 },
@@ -21,7 +21,7 @@ export default async (req: Request) => {
   }
 
   const authorization = req.headers.get("authorization") ?? "";
-  if (authorization !== `Bearer ${adminToken}`) {
+  if (authorization !== `Bearer ${adminSecret}`) {
     return Response.json(
       { success: false, error: "Unauthorized" },
       { status: 401 },
