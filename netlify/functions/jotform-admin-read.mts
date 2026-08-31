@@ -11,10 +11,20 @@ export default async (req: Request) => {
   }
 
   const apiKey = Netlify.env.get("JOTFORM_API_KEY");
-  if (!apiKey) {
+  const adminToken = Netlify.env.get("JOTFORM_ADMIN_TOKEN");
+
+  if (!apiKey || !adminToken) {
     return Response.json(
-      { success: false, error: "JOTFORM_API_KEY not configured" },
+      { success: false, error: "Jotform admin runtime is not configured" },
       { status: 503 },
+    );
+  }
+
+  const authorization = req.headers.get("authorization") ?? "";
+  if (authorization !== `Bearer ${adminToken}`) {
+    return Response.json(
+      { success: false, error: "Unauthorized" },
+      { status: 401 },
     );
   }
 
