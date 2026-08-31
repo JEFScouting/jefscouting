@@ -118,10 +118,9 @@ export default async (req: Request) => {
     return json({ ok: false, error: "Method not allowed" }, 405);
   }
 
-  // Until production cutover is explicitly authorized, mutation execution remains
-  // constrained to Deploy Preview. There is deliberately no browser/admin UI.
-  // A governed runtime/automation must invoke this contract; Joaquin is not the
-  // transport layer for deterministic JEF operations.
+  // UAT-only executor. The canonical remediation has already completed in Jotform.
+  // This contract remains intentionally constrained to Deploy Preview so the PR can
+  // preserve reproducible evidence without creating a production mutation surface.
   if (!isDeployPreview) {
     return json({ ok: false, error: "Mutations allowed only on Deploy Preview" }, 403);
   }
@@ -182,7 +181,6 @@ export default async (req: Request) => {
       );
     }
 
-    // Idempotent no-op: already in the intended retired-input state.
     if (before.hidden === "Yes" && before.required === "No") {
       return json({
         ok: true,
