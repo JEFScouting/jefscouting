@@ -3,19 +3,9 @@ import { timingSafeEqual } from "node:crypto";
 function json(body: unknown, status = 200): Response {
   return Response.json(body, {
     status,
-    headers: { "cache-control": "no-store" },
-  });
-}
-
-function html(body: string, status = 200): Response {
-  return new Response(body, {
-    status,
     headers: {
-      "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'",
     },
   });
 }
@@ -24,10 +14,7 @@ function secretsMatch(provided: string, expected: string): boolean {
   const providedBuffer = Buffer.from(provided);
   const expectedBuffer = Buffer.from(expected);
 
-  if (providedBuffer.length !== expectedBuffer.length) {
-    return false;
-  }
-
+  if (providedBuffer.length !== expectedBuffer.length) return false;
   return timingSafeEqual(providedBuffer, expectedBuffer);
 }
 
@@ -43,101 +30,19 @@ function questionSnapshot(question: Record<string, unknown>) {
   };
 }
 
-function mutationUatPage(): Response {
-  return html(`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>JEF Jotform Mutation UAT</title>
-  <style>
-    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
-    body { margin: 0; background: #0b1220; color: #e5e7eb; }
-    main { max-width: 680px; margin: 0 auto; padding: 28px 18px 48px; }
-    .card { background: #111827; border: 1px solid #374151; border-radius: 16px; padding: 22px; }
-    h1 { font-size: 1.35rem; margin: 0 0 10px; }
-    p { line-height: 1.55; color: #cbd5e1; }
-    .facts { background: #0f172a; border-radius: 12px; padding: 14px; margin: 16px 0; line-height: 1.55; }
-    label { display: block; font-weight: 700; margin: 18px 0 8px; }
-    input { width: 100%; box-sizing: border-box; border: 1px solid #475569; border-radius: 10px; padding: 13px; font-size: 16px; background: #020617; color: #fff; }
-    button { width: 100%; margin-top: 14px; border: 0; border-radius: 10px; padding: 14px; font-size: 16px; font-weight: 800; background: #f59e0b; color: #111827; }
-    button:disabled { opacity: .55; }
-    pre { white-space: pre-wrap; word-break: break-word; background: #020617; border-radius: 10px; padding: 14px; min-height: 64px; margin-top: 16px; }
-    .warn { color: #fbbf24; font-weight: 700; }
-  </style>
-</head>
-<body>
-<main>
-  <div class="card">
-    <h1>JEF Jotform Mutation UAT</h1>
-    <p class="warn">Deploy Preview only. This action does not delete QID 49.</p>
-    <div class="facts">
-      Form: 261713499954067<br>
-      Target: QID 49 — Current U.S. work authorization<br>
-      Change: hidden = Yes; required = No<br>
-      Preservation: historical question retained; physical delete = No
-    </div>
-    <p>The adapter will read the question first, refuse to proceed unless it exactly matches the audited duplicate, apply the reversible change, then read it again and verify the result.</p>
-    <label for="secret">JOTFORM_ADMIN_SECRET</label>
-    <input id="secret" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Paste the Deploy Preview admin secret">
-    <button id="run" type="button">Run reversible remediation</button>
-    <pre id="result">Ready. Nothing has been changed yet.</pre>
-  </div>
-</main>
-<script>
-(() => {
-  const run = document.getElementById('run');
-  const secret = document.getElementById('secret');
-  const result = document.getElementById('result');
+const JOTFORM_API_BASE = "https://api.jotform.com";
+const ALLOWED_FORM_IDS = new Set([
+  "262081932367056",
+  "262220138013037",
+  "261713499954067",
+]);
+const ALLOWED_RESOURCES = new Set(["form", "questions", "webhooks", "properties"]);
 
-  run.addEventListener('click', async () => {
-    const value = secret.value;
-    if (!value) {
-      result.textContent = 'Secret is required. No request sent.';
-      return;
-    }
-
-    run.disabled = true;
-    result.textContent = 'Running read-before → reversible mutation → read-after verification…';
-
-    try {
-      const response = await fetch('/api/jotform-admin', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-jef-admin-secret': value,
-        },
-        body: JSON.stringify({ action: 'hide-barista-duplicate-work-auth' }),
-      });
-
-      const data = await response.json();
-      result.textContent = JSON.stringify(data, null, 2);
-      secret.value = '';
-    } catch (error) {
-      result.textContent = 'Request failed before verification: ' + String(error);
-    } finally {
-      run.disabled = false;
-    }
-  });
-})();
-</script>
-</body>
-</html>`);
-}
+const BARISTA_FORM_ID = "261713499954067";
+const BARISTA_DUPLICATE_QID = "49";
+const RETIRE_DUPLICATE_ACTION = "retire-barista-duplicate-work-auth";
 
 export default async (req: Request) => {
-  const JOTFORM_API_BASE = "https://api.jotform.com";
-
-  const ALLOWED_FORM_IDS = new Set([
-    "262081932367056",
-    "262220138013037",
-    "261713499954067",
-  ]);
-
-  const ALLOWED_RESOURCES = new Set(["form", "questions", "webhooks", "properties"]);
-  const BARISTA_FORM_ID = "261713499954067";
-  const BARISTA_DUPLICATE_QID = "49";
-  const MUTATION_ACTION = "hide-barista-duplicate-work-auth";
   const requestUrl = new URL(req.url);
   const isDeployPreview = requestUrl.hostname.startsWith("deploy-preview-");
 
@@ -171,13 +76,6 @@ export default async (req: Request) => {
   };
 
   if (req.method === "GET") {
-    if (requestUrl.searchParams.get("ui") === "mutation") {
-      if (!isDeployPreview) {
-        return json({ ok: false, error: "Mutation UI allowed only on Deploy Preview" }, 403);
-      }
-      return mutationUatPage();
-    }
-
     const formId = (requestUrl.searchParams.get("formId") ?? "").trim();
     const resource = (requestUrl.searchParams.get("resource") ?? "form").trim();
 
@@ -189,17 +87,27 @@ export default async (req: Request) => {
       return json({ ok: false, error: "Unsupported resource" }, 400);
     }
 
-    const endpoint = resource === "form" ? `/form/${formId}` : `/form/${formId}/${resource}`;
+    const endpoint =
+      resource === "form" ? `/form/${formId}` : `/form/${formId}/${resource}`;
 
     try {
       const result = await jotformRequest(endpoint, { method: "GET" });
-
       if (!result.ok) {
         console.error("Jotform read rejected", result.status, formId, resource);
-        return json({ ok: false, error: "Jotform read failed", upstreamStatus: result.status }, 502);
+        return json(
+          { ok: false, error: "Jotform read failed", upstreamStatus: result.status },
+          502,
+        );
       }
 
-      return json({ ok: true, mode: "READ_ONLY", formId, resource, data: result.data });
+      return json({
+        ok: true,
+        mode: "READ_ONLY",
+        authority: "JOTFORM_REMEDIATION_ADAPTER",
+        formId,
+        resource,
+        data: result.data,
+      });
     } catch (error) {
       console.error("Jotform admin adapter read failure", error);
       return json({ ok: false, error: "Jotform request failed" }, 502);
@@ -210,29 +118,36 @@ export default async (req: Request) => {
     return json({ ok: false, error: "Method not allowed" }, 405);
   }
 
+  // Until production cutover is explicitly authorized, mutation execution remains
+  // constrained to Deploy Preview. There is deliberately no browser/admin UI.
+  // A governed runtime/automation must invoke this contract; Joaquin is not the
+  // transport layer for deterministic JEF operations.
   if (!isDeployPreview) {
     return json({ ok: false, error: "Mutations allowed only on Deploy Preview" }, 403);
   }
 
-  const adminSecret = Netlify.env.get("JOTFORM_ADMIN_SECRET");
-  if (!adminSecret) {
-    return json({ ok: false, error: "Mutation gate is not configured" }, 503);
+  const automationSecret = Netlify.env.get("JEF_AUTOMATION_SECRET");
+  if (!automationSecret) {
+    return json({ ok: false, error: "Governed execution secret is not configured" }, 503);
   }
 
-  const providedSecret = req.headers.get("x-jef-admin-secret") ?? "";
-  if (!providedSecret || !secretsMatch(providedSecret, adminSecret)) {
-    return json({ ok: false, error: "Unauthorized" }, 401);
+  const providedSecret = req.headers.get("x-jef-automation-secret") ?? "";
+  if (!providedSecret || !secretsMatch(providedSecret, automationSecret)) {
+    return json({ ok: false, error: "Unauthorized governed execution request" }, 401);
   }
 
-  let payload: { action?: string };
+  let payload: { action?: string; formId?: string };
   try {
     payload = await req.json();
   } catch {
     return json({ ok: false, error: "Invalid JSON body" }, 400);
   }
 
-  if (payload.action !== MUTATION_ACTION) {
-    return json({ ok: false, error: "Unsupported mutation action" }, 400);
+  if (
+    payload.action !== RETIRE_DUPLICATE_ACTION ||
+    payload.formId !== BARISTA_FORM_ID
+  ) {
+    return json({ ok: false, error: "Unsupported mutation contract" }, 400);
   }
 
   try {
@@ -242,20 +157,58 @@ export default async (req: Request) => {
     );
 
     if (!beforeResult.ok) {
-      return json({ ok: false, error: "Read-before failed", upstreamStatus: beforeResult.status }, 502);
+      return json(
+        { ok: false, error: "Read-before failed", upstreamStatus: beforeResult.status },
+        502,
+      );
     }
 
     const before = beforeResult.data?.content ?? {};
-    const expectedState =
+    const exactDuplicateIdentity =
       before.qid === BARISTA_DUPLICATE_QID &&
       before.name === "doYou" &&
       before.text === "Current U.S. work authorization" &&
-      before.hidden === "No" &&
-      before.required === "Yes" &&
-      before.options === "Authorized to work|Will need sponsorship|Need to confirm";
+      before.options ===
+        "Authorized to work|Will need sponsorship|Need to confirm";
 
-    if (!expectedState) {
-      return json({ ok: false, error: "Mutation precondition failed", before: questionSnapshot(before) }, 409);
+    if (!exactDuplicateIdentity) {
+      return json(
+        {
+          ok: false,
+          error: "Mutation identity precondition failed",
+          before: questionSnapshot(before),
+        },
+        409,
+      );
+    }
+
+    // Idempotent no-op: already in the intended retired-input state.
+    if (before.hidden === "Yes" && before.required === "No") {
+      return json({
+        ok: true,
+        mode: "GOVERNED_MUTATION_UAT",
+        action: RETIRE_DUPLICATE_ACTION,
+        formId: BARISTA_FORM_ID,
+        qid: BARISTA_DUPLICATE_QID,
+        result: "NO_OP_ALREADY_REMEDIATED",
+        before: questionSnapshot(before),
+        historicalQuestionPreserved: true,
+        physicalDeletePerformed: false,
+      });
+    }
+
+    const expectedMutableState =
+      before.hidden === "No" && before.required === "Yes";
+
+    if (!expectedMutableState) {
+      return json(
+        {
+          ok: false,
+          error: "Mutation state precondition failed",
+          before: questionSnapshot(before),
+        },
+        409,
+      );
     }
 
     const body = new URLSearchParams();
@@ -272,7 +225,14 @@ export default async (req: Request) => {
     );
 
     if (!mutationResult.ok) {
-      return json({ ok: false, error: "Jotform mutation failed", upstreamStatus: mutationResult.status }, 502);
+      return json(
+        {
+          ok: false,
+          error: "Jotform mutation failed",
+          upstreamStatus: mutationResult.status,
+        },
+        502,
+      );
     }
 
     const afterResult = await jotformRequest(
@@ -281,7 +241,10 @@ export default async (req: Request) => {
     );
 
     if (!afterResult.ok) {
-      return json({ ok: false, error: "Read-after failed", upstreamStatus: afterResult.status }, 502);
+      return json(
+        { ok: false, error: "Read-after failed", upstreamStatus: afterResult.status },
+        502,
+      );
     }
 
     const after = afterResult.data?.content ?? {};
@@ -292,27 +255,31 @@ export default async (req: Request) => {
       after.required === "No";
 
     if (!verified) {
-      return json({
-        ok: false,
-        error: "Mutation could not be verified",
-        before: questionSnapshot(before),
-        after: questionSnapshot(after),
-      }, 502);
+      return json(
+        {
+          ok: false,
+          error: "Mutation could not be verified",
+          before: questionSnapshot(before),
+          after: questionSnapshot(after),
+        },
+        502,
+      );
     }
 
     return json({
       ok: true,
-      mode: "MUTATION_UAT",
-      action: MUTATION_ACTION,
+      mode: "GOVERNED_MUTATION_UAT",
+      action: RETIRE_DUPLICATE_ACTION,
       formId: BARISTA_FORM_ID,
       qid: BARISTA_DUPLICATE_QID,
+      result: "REMEDIATED_AND_VERIFIED",
       before: questionSnapshot(before),
       after: questionSnapshot(after),
       historicalQuestionPreserved: true,
       physicalDeletePerformed: false,
     });
   } catch (error) {
-    console.error("Jotform admin adapter mutation failure", error);
+    console.error("Jotform remediation adapter mutation failure", error);
     return json({ ok: false, error: "Jotform mutation request failed" }, 502);
   }
 };
