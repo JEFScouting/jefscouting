@@ -1,0 +1,9 @@
+{
+  "name": "@jefscouting/outreach-v2-gmail-adapter-skeleton",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": { "node": ">=20" }
+}
