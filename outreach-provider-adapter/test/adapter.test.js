@@ -8,11 +8,12 @@ import {
   canonicalPayloadFingerprint,
   gmailCorrelationIdentity
 } from "../src/adapter.js";
+import { GmailApiProvider } from "../src/gmail-provider.js";
 
 const payload = Object.freeze({
   contractVersion: "outreach-v2", suppressionCleared: true, campaignId: "campaign", leadId: "lead", messageVersion: "v1", sequenceStep: "FU1",
   sequenceInstanceKey: "SEQ|campaign|lead|v1", sequenceVersionSnapshot: "seq-v1", templateVersionSnapshot: "tpl-v3",
-  senderIdentitySnapshot: "sender:jef-outreach", verifiedRecipient: "person@example.com", destination: "person@example.com",
+  senderIdentitySnapshot: "hello@jefscouting.com", verifiedRecipient: "person@example.com", destination: "person@example.com",
   finalSubjectSnapshot: "Hello", subject: "Hello", finalBodySnapshot: "Body", textBody: "Body", priorContactSnapshot: "CLEAR"
 });
 const effectKey = "OUTREACH-SEND|campaign|lead|v1|FU1";
@@ -89,7 +90,7 @@ test("canonical authority cannot be manufactured by a bare boolean or mismatched
 });
 
 test("recipient/sender/content snapshot tampering blocks before claim/provider", async () => {
-  for (const mutated of [{ ...payload, destination: "wrong@example.com" }, { ...payload, subject: "Changed" }, { ...payload, textBody: "Changed" }, { ...payload, senderIdentitySnapshot: "sender:other" }, { ...payload, priorContactSnapshot: "UNKNOWN" }]) {
+  for (const mutated of [{ ...payload, destination: "wrong@example.com" }, { ...payload, subject: "Changed" }, { ...payload, textBody: "Changed" }, { ...payload, senderIdentitySnapshot: "other@jefscouting.com" }, { ...payload, priorContactSnapshot: "UNKNOWN" }]) {
     const h = harness();
     await assert.rejects(h.adapter.execute({ ...request, payload: mutated }), FailClosedError);
     assert.equal(h.effects.claim, 0); assert.equal(h.effects.send, 0);
@@ -135,6 +136,29 @@ test("reconciliation uses stored identity lookup and never sends", async () => {
   await h.adapter.execute(request);
   assert.equal((await h.adapter.reconcile({ effectKey, claimToken })).result, "RECONCILED");
   assert.equal(h.effects.send, 1); assert.equal(h.effects.lookup, 1); assert.equal(h.record().providerInvocationCount, 1);
+});
+
+test("actual GmailApiProvider reconciles UNKNOWN_HOLD by exact RFC Message-ID with zero resend", async () => {
+  let sends = 0; let lookups = 0; let record;
+  const claimStore = {
+    async claim() { return { result: "WON", record: { effect_key: effectKey, claim_token: claimToken } }; },
+    async reserveProviderAttempt({ identity, payloadFingerprint }) { record = { state: "RESERVED", providerInvocationCount: 1, identity, payloadFingerprint }; return { result: "RESERVED", providerInvocationCount: 1 }; },
+    async holdUnknownProviderOutcome(args) { record = { ...record, ...args, state: "UNKNOWN_HOLD" }; },
+    async confirmProviderOutcome(args) { record = { ...record, ...args, state: "CONFIRMED" }; },
+    async failProviderAttemptNoRetry(args) { record = { ...record, ...args, state: "FAILED_NO_RETRY" }; },
+    async readForReconciliation() { return record; }
+  };
+  const gmailProvider = new GmailApiProvider({ from: payload.senderIdentitySnapshot, transport: {
+    async sendRaw() { sends++; throw new Error("ambiguous after provider boundary"); },
+    async lookupByRfcMessageId({ rfcMessageId }) { lookups++; assert.equal(rfcMessageId, record.identity.rfcMessageId); return { id: "gmail-reconciled" }; }
+  }});
+  const adapter = new GmailOutreachV2Adapter({ controls: activeControls, claimStore, gmailProvider,
+    executionGate: { async readCurrent() { return canonicalBinding; } },
+    safetyGate: { async revalidate() { return { suppressionCleared: true, responsePriorityClear: true }; } }
+  });
+  assert.equal((await adapter.execute(request)).result, "UNKNOWN_HOLD");
+  assert.equal((await adapter.reconcile({ effectKey, claimToken })).result, "RECONCILED");
+  assert.equal(sends, 1); assert.equal(lookups, 1); assert.equal(record.providerInvocationCount, 1);
 });
 
 test("malformed canonical payload/effect mismatch fail with zero external effects", async () => {
