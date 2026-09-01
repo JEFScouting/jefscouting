@@ -48,10 +48,6 @@ export function gmailCorrelationIdentity(effectKey, correlationDomain) {
   return { correlationId: `jef-outreach-v2-${digest}`, rfcMessageId: `<jef-outreach-v2-${digest}@${correlationDomain}>` };
 }
 
-/**
- * claimStore is the single durable exactly-once authority for effect ownership AND
- * provider-attempt state. A second attempt store is intentionally prohibited.
- */
 export class GmailOutreachV2Adapter {
   constructor({ claimStore, safetyGate, executionGate, gmailProvider, controls }) {
     if (!claimStore || !safetyGate || !executionGate || !gmailProvider) throw new FailClosedError("ADAPTER_PORT_MISSING");
@@ -81,13 +77,17 @@ export class GmailOutreachV2Adapter {
     if (reservation?.result !== "RESERVED" || reservation.providerInvocationCount !== 1) throw new FailClosedError("PROVIDER_ATTEMPT_NOT_RESERVED");
 
     try {
-      const outcome = await this.gmailProvider.sendOnce({ payload, effectKey, claimToken, identity, payloadFingerprint: binding.payloadFingerprint });
+      const outcome = await this.gmailProvider.sendOnce({ payload, effectKey, claimToken, identity, payloadFingerprint: binding.payloadFingerprint, authorizedSenderIdentity: binding.senderIdentity });
       if (!outcome?.confirmed || !outcome.providerMessageId) throw new AmbiguousProviderResult("GMAIL_ACK_AMBIGUOUS");
       await this.claimStore.confirmProviderOutcome({ effectKey, claimToken, identity, payloadFingerprint: binding.payloadFingerprint, providerMessageId: outcome.providerMessageId, outcome: outcome.outcome ?? "SENT" });
       return { result: "CONFIRMED", identity, providerMessageId: outcome.providerMessageId };
     } catch (error) {
       if (error instanceof PreInvocationProviderError) {
         await this.claimStore.failProviderAttemptNoRetry({ effectKey, claimToken, identity, payloadFingerprint: binding.payloadFingerprint, reason: "CONFIRMED_NOT_SENT_PRE_INVOCATION" });
+        throw error;
+      }
+      if (error instanceof FailClosedError) {
+        await this.claimStore.failProviderAttemptNoRetry({ effectKey, claimToken, identity, payloadFingerprint: binding.payloadFingerprint, reason: "PROVIDER_CONFIGURATION_FAIL_CLOSED" });
         throw error;
       }
       const reason = error instanceof AmbiguousProviderResult ? "AMBIGUOUS_PROVIDER_ACK" : "UNCLASSIFIED_PROVIDER_ERROR_AFTER_BOUNDARY";
@@ -100,7 +100,7 @@ export class GmailOutreachV2Adapter {
     if (!effectKey || !claimToken) throw new FailClosedError("RECONCILIATION_IDENTITY_REQUIRED");
     const stored = await this.claimStore.readForReconciliation({ effectKey, claimToken });
     if (stored?.state !== "UNKNOWN_HOLD" || stored.providerInvocationCount !== 1 || !stored.identity || !stored.payloadFingerprint) throw new FailClosedError("STORED_UNKNOWN_PROVIDER_EVIDENCE_REQUIRED");
-    const evidence = await this.gmailProvider.lookup(stored.identity);
+    const evidence = await this.gmailProvider.lookup({ identity: stored.identity });
     if (!evidence?.confirmed || !evidence.providerMessageId) return { result: "UNKNOWN_HOLD", automaticRetry: false, resend: false };
     await this.claimStore.confirmProviderOutcome({ effectKey, claimToken, identity: stored.identity, payloadFingerprint: stored.payloadFingerprint, providerMessageId: evidence.providerMessageId, outcome: "RECONCILED_SENT" });
     return { result: "RECONCILED", providerMessageId: evidence.providerMessageId, resend: false };
