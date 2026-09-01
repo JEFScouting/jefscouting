@@ -29,15 +29,6 @@ export function buildGmailRawMessage({ payload, identity, from }) {
   return base64url(raw);
 }
 
-/**
- * Bounded Gmail provider implementation. Credentials/OAuth and account binding
- * stay outside this class. The injected transport must expose only:
- *   sendRaw({ raw }) -> { id }
- *   lookupByRfcMessageId({ rfcMessageId }) -> { id } | null
- *
- * This class does not retry. Any uncertain send result becomes UNKNOWN_HOLD via
- * AmbiguousProviderResult so reconciliation can use the deterministic Message-ID.
- */
 export class GmailApiProvider {
   constructor({ transport, from }) {
     if (!transport?.sendRaw || !transport?.lookupByRfcMessageId) throw new FailClosedError("GMAIL_TRANSPORT_PORT_INCOMPLETE");
@@ -45,7 +36,9 @@ export class GmailApiProvider {
     this.from = safeHeader(from, "FROM");
   }
 
-  async sendOnce({ payload, identity }) {
+  async sendOnce({ payload, identity, authorizedSenderIdentity }) {
+    const authorizedFrom = safeHeader(authorizedSenderIdentity, "AUTHORIZED_FROM");
+    if (this.from !== authorizedFrom || payload?.senderIdentitySnapshot !== authorizedFrom) throw new FailClosedError("GMAIL_FROM_AUTHORITY_MISMATCH");
     const raw = buildGmailRawMessage({ payload, identity, from: this.from });
     let result;
     try {
