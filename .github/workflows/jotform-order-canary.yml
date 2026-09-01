@@ -1,0 +1,28 @@
+name: Jotform Order Canary
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/jotform-order-canary.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Invoke bounded Barista order canary
+        run: |
+          for i in {1..12}; do
+            code=$(curl -sS -o canary.json -w "%{http_code}" -X POST https://jefscouting.com/api/jotform-order-canary || true)
+            if [ "$code" = "200" ]; then
+              cat canary.json
+              exit 0
+            fi
+            echo "Attempt $i returned HTTP $code"
+            cat canary.json || true
+            sleep 5
+          done
+          exit 1
