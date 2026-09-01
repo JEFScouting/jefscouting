@@ -1,5 +1,5 @@
 export default async (req: Request) => {
-  if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  if (req.method !== "GET") return new Response("Method not allowed", { status: 405 });
 
   const adminSecret = Netlify.env.get("JOTFORM_ADMIN_SECRET");
   if (!adminSecret) {
@@ -27,4 +27,4 @@ export default async (req: Request) => {
   });
 };
 
-export const config = { path: "/api/jotform-order-canary" };
+export const config = { path: "/api/jotform-order-canary-Qf9wMS6KSxvYXpZuJzfV_7E1" };
