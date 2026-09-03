@@ -22,14 +22,7 @@ jobs:
           url="https://jefscouting.com/api/jotform-audit-snapshot"
           for attempt in $(seq 1 30); do
             status=$(curl --silent --show-error --output snapshot.json --write-out "%{http_code}" "$url" || true)
-            if [ "$status" = "200" ] && python3 - <<'PY'
-import json
-with open("snapshot.json", "r", encoding="utf-8") as f:
-    payload = json.load(f)
-required = {"version", "algorithm", "encryptedKey", "iv", "tag", "ciphertext"}
-raise SystemExit(0 if required.issubset(payload) else 1)
-PY
-            then
+            if [ "$status" = "200" ] && jq -e 'has("version") and has("algorithm") and has("encryptedKey") and has("iv") and has("tag") and has("ciphertext")' snapshot.json >/dev/null; then
               exit 0
             fi
             sleep 10
