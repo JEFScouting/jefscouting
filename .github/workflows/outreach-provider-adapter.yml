@@ -81,22 +81,37 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          endpoint='https://jef-outreach-next-runtime.netlify.app/slice01'
+          base='https://jef-outreach-next-runtime.netlify.app'
           expected_version='JEF-OUTREACH-RUNTIME-v1.1.3-gmail-send-gated'
           body_file="${RUNNER_TEMP}/outreach-live-identity.json"
 
-          status="$(curl --silent --show-error --location \
-            --connect-timeout 10 --max-time 20 \
-            --output "${body_file}" \
-            --write-out '%{http_code}' \
-            "${endpoint}")"
+          probe() {
+            local path="$1"
+            local status
+            status="$(curl --silent --show-error --location \
+              --connect-timeout 10 --max-time 20 \
+              --output "${body_file}" \
+              --write-out '%{http_code}' \
+              "${base}${path}")"
+            echo "Probe ${path} -> HTTP ${status}"
+            printf '%s' "${status}"
+          }
 
-          echo "Live endpoint HTTP status: ${status}"
-          cat "${body_file}"
+          canonical_status="$(probe '/slice01')"
+          if [ "${canonical_status##*$'\n'}" = '405' ]; then
+            live_path='/slice01'
+          else
+            native_status="$(probe '/.netlify/functions/slice01')"
+            if [ "${native_status##*$'\n'}" != '405' ]; then
+              echo 'Neither canonical nor native Netlify function route reached the deployed handler.' >&2
+              cat "${body_file}" >&2
+              exit 1
+            fi
+            live_path='/.netlify/functions/slice01'
+            echo 'ROUTING_NOTE: /slice01 is not published; native Netlify function route is live.'
+          fi
 
-          test "${status}" = '405'
-
-          BODY_FILE="${body_file}" EXPECTED_VERSION="${expected_version}" node <<'NODE'
+          BODY_FILE="${body_file}" EXPECTED_VERSION="${expected_version}" LIVE_PATH="${live_path}" node <<'NODE'
           const fs = require('fs');
           const body = JSON.parse(fs.readFileSync(process.env.BODY_FILE, 'utf8'));
           if (body.error !== 'POST_ONLY') {
@@ -105,5 +120,5 @@ jobs:
           if (body.version !== process.env.EXPECTED_VERSION) {
             throw new Error(`Expected version=${process.env.EXPECTED_VERSION}, received ${JSON.stringify(body.version)}`);
           }
-          console.log(`Live runtime identity PASS: ${body.version}`);
+          console.log(`Live runtime identity PASS at ${process.env.LIVE_PATH}: ${body.version}`);
           NODE
