@@ -85,25 +85,28 @@ jobs:
           expected_version='JEF-OUTREACH-RUNTIME-v1.1.3-gmail-send-gated'
           body_file="${RUNNER_TEMP}/outreach-live-identity.json"
 
-          probe() {
+          probe_post() {
             local path="$1"
             local status
             status="$(curl --silent --show-error --location \
               --connect-timeout 10 --max-time 20 \
+              --request POST \
+              --header 'content-type: application/json' \
+              --data '{}' \
               --output "${body_file}" \
               --write-out '%{http_code}' \
               "${base}${path}")"
-            echo "Probe ${path} -> HTTP ${status}" >&2
+            echo "Unauthenticated POST ${path} -> HTTP ${status}" >&2
             printf '%s' "${status}"
           }
 
-          canonical_status="$(probe '/slice01')"
-          if [ "${canonical_status}" = '405' ]; then
+          canonical_status="$(probe_post '/slice01')"
+          if [ "${canonical_status}" = '401' ]; then
             live_path='/slice01'
           else
-            native_status="$(probe '/.netlify/functions/slice01')"
-            if [ "${native_status}" != '405' ]; then
-              echo 'Neither canonical nor native Netlify function route reached the deployed handler.' >&2
+            native_status="$(probe_post '/.netlify/functions/slice01')"
+            if [ "${native_status}" != '401' ]; then
+              echo 'Neither canonical nor native route reached the fail-closed handler auth boundary.' >&2
               cat "${body_file}" >&2
               exit 1
             fi
@@ -114,12 +117,11 @@ jobs:
           BODY_FILE="${body_file}" EXPECTED_VERSION="${expected_version}" LIVE_PATH="${live_path}" node <<'NODE'
           const fs = require('fs');
           const body = JSON.parse(fs.readFileSync(process.env.BODY_FILE, 'utf8'));
-          const methodGuard = new Set(['POST_ONLY', 'POST_REQUIRED']);
-          if (!methodGuard.has(body.error)) {
-            throw new Error(`Expected POST method guard, received ${JSON.stringify(body.error)}`);
+          if (body.error !== 'UNAUTHORIZED') {
+            throw new Error(`Expected fail-closed UNAUTHORIZED, received ${JSON.stringify(body.error)}`);
           }
           if (body.version !== process.env.EXPECTED_VERSION) {
             throw new Error(`Expected version=${process.env.EXPECTED_VERSION}, received ${JSON.stringify(body.version)}`);
           }
-          console.log(`Live runtime identity PASS at ${process.env.LIVE_PATH}: ${body.version}; guard=${body.error}`);
+          console.log(`Live runtime identity PASS at ${process.env.LIVE_PATH}: ${body.version}`);
           NODE
