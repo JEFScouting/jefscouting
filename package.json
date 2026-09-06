@@ -1,0 +1,15 @@
+{
+  "name": "jefscouting-runtime",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:outreach-runtime": "esbuild netlify/functions/slice01.mts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=.runtime-build/slice01.mjs",
+    "test:outreach-runtime": "node --test test/outreach-runtime-guard.test.mjs"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "1.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.9"
+  }
+}
