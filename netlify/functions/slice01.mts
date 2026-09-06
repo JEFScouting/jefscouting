@@ -1,6 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 
-const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.3-gmail-send-gated";
+const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.4-direct-send-contained";
 const EFFECT_PREFIX = "OUTREACH-SEND";
 const REQUIRED_GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
@@ -165,8 +165,8 @@ async function insertEvent(sql: any, input: { effectKey: string; operation: stri
   `;
 }
 
-async function processSend(sql: any, args: any, runtimeMode: string, sendEnabled: boolean) {
-  if (runtimeMode === "zero-send" || !sendEnabled) return json(409, { ok: false, error: "SEND_DISABLED", version: VERSION });
+async function processSelfCanarySend(sql: any, args: any, runtimeMode: string, sendEnabled: boolean) {
+  if (runtimeMode !== "canary-send" || !sendEnabled) return json(409, { ok: false, error: "CANARY_SEND_DISABLED", version: VERSION });
   const effectKey = String(args.effect_key || "").trim();
   const claimToken = String(args.claim_token || "").trim();
   const claimantId = String(args.claimant_id || "").trim();
@@ -193,7 +193,7 @@ async function processSend(sql: any, args: any, runtimeMode: string, sendEnabled
   const auth = await oauthAccessToken();
   const profile = await gmailProfile(auth.accessToken);
   if (String(profile.emailAddress).toLowerCase() !== String(auth.sender).toLowerCase()) throw new Error("GMAIL_SENDER_IDENTITY_MISMATCH");
-  if (runtimeMode === "canary-send" && String(row.destination).toLowerCase() !== String(auth.sender).toLowerCase()) {
+  if (String(row.destination).toLowerCase() !== String(auth.sender).toLowerCase()) {
     return json(409, { ok: false, error: "CANARY_DESTINATION_MUST_EQUAL_SENDER", automatic_retry: false, version: VERSION });
   }
   const payloadFingerprint = await digestHex([auth.sender, row.destination, subject, body, rfcMessageId].join("\n"));
@@ -247,7 +247,7 @@ export default async (req: Request) => {
   const runtimeMode = String(Netlify.env.get("OUTREACH_RUNTIME_MODE") || "zero-send");
   const sendEnabled = String(Netlify.env.get("OUTREACH_SEND_ENABLED") || "false").toLowerCase() === "true";
   if (!databaseUrl) return json(503, { ok: false, error: "DATABASE_URL_REQUIRED", version: VERSION });
-  if (!new Set(["zero-send", "canary-send", "production"]).has(runtimeMode)) return json(503, { ok: false, error: "RUNTIME_MODE_INVALID", version: VERSION });
+  if (!new Set(["zero-send", "canary-send"]).has(runtimeMode)) return json(503, { ok: false, error: "RUNTIME_MODE_INVALID_PRODUCTION_UNSUPPORTED", version: VERSION });
   if (runtimeMode === "zero-send" && sendEnabled) return json(503, { ok: false, error: "ZERO_SEND_REQUIRES_SEND_DISABLED", version: VERSION });
   if (runtimeMode !== "zero-send" && !sendEnabled) return json(503, { ok: false, error: "SEND_MODE_REQUIRES_SEND_ENABLED", version: VERSION });
 
@@ -359,7 +359,7 @@ export default async (req: Request) => {
   }
 
   if (op === "SEND_PROVIDER") {
-    return processSend(sql, args, runtimeMode, sendEnabled);
+    return json(409, { ok: false, error: "CANONICAL_ADAPTER_REQUIRED", provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
   }
 
   if (op === "SELF_CANARY_SEND") {
@@ -395,7 +395,7 @@ export default async (req: Request) => {
     `;
     if (!reserved[0]) return json(409, { ok: false, result: "RESERVATION_HOLD", effect_key: effectKey, automatic_retry: false, version: VERSION });
     await insertEvent(sql, { effectKey, operation: "RESERVE_PROVIDER_ATTEMPT", result: "RESERVED", claimToken, claimantId, providerInvocationCount: 1, metadata: { self_canary: true, correlation_id: canaryId, rfc_message_id: rfcMessageId } });
-    return processSend(sql, { effect_key: effectKey, claim_token: claimToken, claimant_id: claimantId, subject, body, rfc_message_id: rfcMessageId }, runtimeMode, sendEnabled);
+    return processSelfCanarySend(sql, { effect_key: effectKey, claim_token: claimToken, claimant_id: claimantId, subject, body, rfc_message_id: rfcMessageId }, runtimeMode, sendEnabled);
   }
 
   if (op === "RECONCILE") {
