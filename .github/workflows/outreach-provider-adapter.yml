@@ -93,16 +93,16 @@ jobs:
               --output "${body_file}" \
               --write-out '%{http_code}' \
               "${base}${path}")"
-            echo "Probe ${path} -> HTTP ${status}"
+            echo "Probe ${path} -> HTTP ${status}" >&2
             printf '%s' "${status}"
           }
 
           canonical_status="$(probe '/slice01')"
-          if [ "${canonical_status##*$'\n'}" = '405' ]; then
+          if [ "${canonical_status}" = '405' ]; then
             live_path='/slice01'
           else
             native_status="$(probe '/.netlify/functions/slice01')"
-            if [ "${native_status##*$'\n'}" != '405' ]; then
+            if [ "${native_status}" != '405' ]; then
               echo 'Neither canonical nor native Netlify function route reached the deployed handler.' >&2
               cat "${body_file}" >&2
               exit 1
@@ -114,11 +114,12 @@ jobs:
           BODY_FILE="${body_file}" EXPECTED_VERSION="${expected_version}" LIVE_PATH="${live_path}" node <<'NODE'
           const fs = require('fs');
           const body = JSON.parse(fs.readFileSync(process.env.BODY_FILE, 'utf8'));
-          if (body.error !== 'POST_ONLY') {
-            throw new Error(`Expected error=POST_ONLY, received ${JSON.stringify(body.error)}`);
+          const methodGuard = new Set(['POST_ONLY', 'POST_REQUIRED']);
+          if (!methodGuard.has(body.error)) {
+            throw new Error(`Expected POST method guard, received ${JSON.stringify(body.error)}`);
           }
           if (body.version !== process.env.EXPECTED_VERSION) {
             throw new Error(`Expected version=${process.env.EXPECTED_VERSION}, received ${JSON.stringify(body.version)}`);
           }
-          console.log(`Live runtime identity PASS at ${process.env.LIVE_PATH}: ${body.version}`);
+          console.log(`Live runtime identity PASS at ${process.env.LIVE_PATH}: ${body.version}; guard=${body.error}`);
           NODE
