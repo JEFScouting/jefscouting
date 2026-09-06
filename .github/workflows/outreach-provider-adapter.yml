@@ -1,4 +1,4 @@
-name: Outreach Provider Adapter CI
+name: Outreach Provider Adapter and Runtime CI
 
 on:
   push:
@@ -6,17 +6,25 @@ on:
       - codex/outreach-v2-gmail-adapter-skeleton
     paths:
       - 'outreach-provider-adapter/**'
+      - 'netlify/functions/**'
+      - 'test/outreach-runtime-guard.test.mjs'
+      - 'package.json'
+      - 'netlify.toml'
       - '.github/workflows/outreach-provider-adapter.yml'
   pull_request:
     paths:
       - 'outreach-provider-adapter/**'
+      - 'netlify/functions/**'
+      - 'test/outreach-runtime-guard.test.mjs'
+      - 'package.json'
+      - 'netlify.toml'
       - '.github/workflows/outreach-provider-adapter.yml'
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  adapter:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -42,9 +50,25 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install test dependency
+      - name: Install adapter dependencies
         run: npm install --no-audit --no-fund
-      - name: Test
+      - name: Test adapter
         env:
           TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/outreach_test
         run: npm test
+
+  runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install runtime dependencies
+        run: npm install --no-audit --no-fund
+      - name: Compile Netlify runtime
+        run: npm run build:outreach-runtime
+      - name: Test runtime authority boundary
+        run: npm run test:outreach-runtime
