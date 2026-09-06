@@ -72,3 +72,38 @@ jobs:
         run: npm run build:outreach-runtime
       - name: Test runtime authority boundary
         run: npm run test:outreach-runtime
+
+  live-runtime-identity:
+    name: Live runtime identity (read-only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify deployed v1.1.3 identity without authentication or send authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          endpoint='https://jef-outreach-next-runtime.netlify.app/slice01'
+          expected_version='JEF-OUTREACH-RUNTIME-v1.1.3-gmail-send-gated'
+          body_file="${RUNNER_TEMP}/outreach-live-identity.json"
+
+          status="$(curl --silent --show-error --location \
+            --connect-timeout 10 --max-time 20 \
+            --output "${body_file}" \
+            --write-out '%{http_code}' \
+            "${endpoint}")"
+
+          echo "Live endpoint HTTP status: ${status}"
+          cat "${body_file}"
+
+          test "${status}" = '405'
+
+          BODY_FILE="${body_file}" EXPECTED_VERSION="${expected_version}" node <<'NODE'
+          const fs = require('fs');
+          const body = JSON.parse(fs.readFileSync(process.env.BODY_FILE, 'utf8'));
+          if (body.error !== 'POST_ONLY') {
+            throw new Error(`Expected error=POST_ONLY, received ${JSON.stringify(body.error)}`);
+          }
+          if (body.version !== process.env.EXPECTED_VERSION) {
+            throw new Error(`Expected version=${process.env.EXPECTED_VERSION}, received ${JSON.stringify(body.version)}`);
+          }
+          console.log(`Live runtime identity PASS: ${body.version}`);
+          NODE
