@@ -1,4 +1,8 @@
-import { neon } from "@neondatabase/serverless";
+import { neon, Pool } from "@neondatabase/serverless";
+import { GmailOutreachV2Adapter, FailClosedError } from "../../outreach-provider-adapter/src/adapter.js";
+import { AirtableOutreachGates, AirtableReadOnlyClient, JEF_AIRTABLE } from "../../outreach-provider-adapter/src/airtable-gates.js";
+import { GmailApiProvider } from "../../outreach-provider-adapter/src/gmail-provider.js";
+import { PostgresClaimStore } from "../../outreach-provider-adapter/src/postgres-claim-store.js";
 
 const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.4-direct-send-contained";
 const EFFECT_PREFIX = "OUTREACH-SEND";
@@ -152,6 +156,78 @@ async function gmailSend(accessToken: string, payload: { sender: string; destina
   return { ok: resp.ok, status: resp.status, messageId: data?.id || null, threadId: data?.threadId || null };
 }
 
+async function gmailSendRaw(accessToken: string, raw: string) {
+  const resp = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ raw }),
+  });
+  const data: any = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const error: any = new Error(`GMAIL_SEND_FAILED_${resp.status}`);
+    error.definitelyNotInvoked = resp.status < 500;
+    throw error;
+  }
+  return data;
+}
+
+function canonicalGmailTransport() {
+  const sender = Netlify.env.get("GMAIL_SENDER_EMAIL") || "";
+  if (!sender) throw new FailClosedError("GMAIL_SENDER_BINDING_REQUIRED");
+  const authorize = async () => {
+    const auth = await oauthAccessToken();
+    const profile = await gmailProfile(auth.accessToken);
+    if (String(profile.emailAddress).toLowerCase() !== String(auth.sender).toLowerCase()) throw new FailClosedError("GMAIL_SENDER_IDENTITY_MISMATCH");
+    return auth;
+  };
+  return {
+    sender,
+    transport: {
+      sendRaw: async ({ raw }: { raw: string }) => {
+        const auth = await authorize();
+        return gmailSendRaw(auth.accessToken, raw);
+      },
+      lookupByRfcMessageId: async ({ rfcMessageId }: { rfcMessageId: string }) => {
+        const auth = await authorize();
+        const result = await gmailLookup(auth.accessToken, rfcMessageId);
+        return result.found ? { id: result.messageId } : null;
+      },
+    },
+  };
+}
+
+async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtimeMode: string, sendEnabled: boolean) {
+  if (runtimeMode !== "production" || !sendEnabled) {
+    return json(409, { ok: false, error: "PRODUCTION_TRANSMISSION_DISABLED", provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
+  }
+  const token = Netlify.env.get("AIRTABLE_READONLY_TOKEN") || "";
+  const baseId = Netlify.env.get("AIRTABLE_BASE_ID") || "";
+  const commandRecordId = Netlify.env.get("OUTREACH_AIRTABLE_COMMAND_RECORD_ID") || "";
+  const campaignRecordId = Netlify.env.get("OUTREACH_AIRTABLE_CAMPAIGN_RECORD_ID") || "";
+  const correlationDomain = Netlify.env.get("OUTREACH_CORRELATION_DOMAIN") || "";
+  if (baseId !== JEF_AIRTABLE.baseId || commandRecordId !== "recpYdDfwJjrpUwyX" || campaignRecordId !== "reclIlbWpaTcMrc18") {
+    throw new FailClosedError("PINNED_CANONICAL_AIRTABLE_AUTHORITY_REQUIRED");
+  }
+  const client = new AirtableReadOnlyClient({ token, baseId });
+  const gates = new AirtableOutreachGates({ client, commandRecordId, campaignRecordId, correlationDomain });
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    const gmail = canonicalGmailTransport();
+    const adapter = new GmailOutreachV2Adapter({
+      claimStore: new PostgresClaimStore({ pool }),
+      executionGate: gates,
+      safetyGate: gates,
+      gmailProvider: new GmailApiProvider({ transport: gmail.transport, from: gmail.sender }),
+      controls: { adapterBuildEnabled: true },
+    });
+    const payload = { ...(args.payload || {}), runtimeMode };
+    const result = await adapter.execute({ payload, effectKey: args.effect_key, claimantId: args.claimant_id, claimToken: args.claim_token });
+    return json(200, { ok: true, ...result, provider_send_called: result.result === "CONFIRMED", provider_call_count: result.result === "CONFIRMED" || result.result === "UNKNOWN_HOLD" ? 1 : 0, automatic_retry: false, version: VERSION });
+  } finally {
+    await pool.end();
+  }
+}
+
 async function insertEvent(sql: any, input: { effectKey: string; operation: string; result: string; claimToken: string; claimantId: string; providerInvocationCount: number; metadata?: unknown }) {
   await sql`
     INSERT INTO outreach_effect_events (
@@ -247,7 +323,7 @@ export default async (req: Request) => {
   const runtimeMode = String(Netlify.env.get("OUTREACH_RUNTIME_MODE") || "zero-send");
   const sendEnabled = String(Netlify.env.get("OUTREACH_SEND_ENABLED") || "false").toLowerCase() === "true";
   if (!databaseUrl) return json(503, { ok: false, error: "DATABASE_URL_REQUIRED", version: VERSION });
-  if (!new Set(["zero-send", "canary-send"]).has(runtimeMode)) return json(503, { ok: false, error: "RUNTIME_MODE_INVALID_PRODUCTION_UNSUPPORTED", version: VERSION });
+  if (!new Set(["zero-send", "canary-send", "production"]).has(runtimeMode)) return json(503, { ok: false, error: "RUNTIME_MODE_INVALID", version: VERSION });
   if (runtimeMode === "zero-send" && sendEnabled) return json(503, { ok: false, error: "ZERO_SEND_REQUIRES_SEND_DISABLED", version: VERSION });
   if (runtimeMode !== "zero-send" && !sendEnabled) return json(503, { ok: false, error: "SEND_MODE_REQUIRES_SEND_ENABLED", version: VERSION });
 
@@ -260,6 +336,15 @@ export default async (req: Request) => {
   }
 
   const sql = neon(databaseUrl);
+
+  if (op === "EXECUTE_FIRST_TOUCH") {
+    try {
+      return await executeCanonicalFirstTouch(args, databaseUrl, runtimeMode, sendEnabled);
+    } catch (error: any) {
+      const status = error instanceof FailClosedError ? 409 : 502;
+      return json(status, { ok: false, error: String(error?.message || "FIRST_TOUCH_EXECUTION_FAILED"), provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
+    }
+  }
 
   if (op === "HEALTH") {
     const rows = await sql`SELECT COUNT(*)::int AS effect_count FROM outreach_effects`;

@@ -4,10 +4,12 @@ import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../netlify/functions/slice01.mts", import.meta.url), "utf8");
 
-test("runtime does not expose production mode", () => {
-  assert.match(source, /new Set\(\["zero-send", "canary-send"\]\)/);
-  assert.doesNotMatch(source, /new Set\(\[[^\]]*"production"/);
-  assert.match(source, /RUNTIME_MODE_INVALID_PRODUCTION_UNSUPPORTED/);
+test("production mode exists only behind the canonical First-Touch adapter", () => {
+  assert.match(source, /new Set\(\["zero-send", "canary-send", "production"\]\)/);
+  assert.match(source, /op === "EXECUTE_FIRST_TOUCH"/);
+  assert.match(source, /new GmailOutreachV2Adapter/);
+  assert.match(source, /adapter\.execute/);
+  assert.match(source, /PRODUCTION_TRANSMISSION_DISABLED/);
 });
 
 test("direct SEND_PROVIDER cannot cross the provider boundary", () => {
@@ -18,7 +20,7 @@ test("direct SEND_PROVIDER cannot cross the provider boundary", () => {
   assert.doesNotMatch(branch, /gmailSend|processSelfCanarySend/);
 });
 
-test("only the self-canary path reaches Gmail send composition", () => {
+test("legacy direct runtime composition remains restricted to self-canary", () => {
   assert.doesNotMatch(source, /async function processSend\(/);
   assert.match(source, /async function processSelfCanarySend\(/);
   assert.match(source, /runtimeMode !== "canary-send"/);
@@ -31,4 +33,21 @@ test("self-canary remains sender-to-sender and uses deterministic isolated ident
   assert.match(source, /String\(row\.destination\)\.toLowerCase\(\) !== String\(auth\.sender\)\.toLowerCase\(\)/);
   assert.match(source, /\$\{EFFECT_PREFIX\}\|SELF-CANARY\|\$\{canaryId\}\|v1\.1\.3\|CANARY/);
   assert.match(source, /provider_invocation_count=1/);
+});
+
+test("exact deployed handler path rejects First-Touch in zero-send before any external call", async () => {
+  const originalFetch=globalThis.fetch;
+  let externalCalls=0;
+  globalThis.fetch=async()=>{externalCalls++; throw new Error("EXTERNAL_CALL_FORBIDDEN");};
+  globalThis.Netlify={env:{get(key){return ({DATABASE_URL:"postgresql://user:pass@example.invalid/db",OUTREACH_RUNTIME_MODE:"zero-send",OUTREACH_SEND_ENABLED:"false",OUTREACH_RUNTIME_SHARED_SECRET:"test-secret"})[key] || "";}}};
+  try {
+    const {default:handler}=await import(new URL(`../.runtime-build/slice01.mjs?test=${Date.now()}`,import.meta.url));
+    const response=await handler(new Request("https://runtime.invalid/slice01",{method:"POST",headers:{"content-type":"application/json","x-outreach-runtime-secret":"test-secret"},body:JSON.stringify({op:"EXECUTE_FIRST_TOUCH"})}));
+    const body=await response.json();
+    assert.equal(response.status,409);
+    assert.equal(body.error,"PRODUCTION_TRANSMISSION_DISABLED");
+    assert.equal(body.provider_send_called,false);
+    assert.equal(body.provider_call_count,0);
+    assert.equal(externalCalls,0);
+  } finally { globalThis.fetch=originalFetch; delete globalThis.Netlify; }
 });

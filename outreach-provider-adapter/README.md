@@ -3,9 +3,15 @@
 This branch contains two deliberately separate pieces:
 
 1. the canonical Outreach v2 Gmail adapter contract; and
-2. a Netlify runtime that supports zero-send diagnostics and an isolated sender-to-sender self-canary.
+2. a Netlify runtime that supports zero-send diagnostics, an isolated sender-to-sender self-canary, and a production First-Touch operation that can execute only through that adapter.
 
-The Netlify handler contains Gmail OAuth, profile, lookup, MIME and send primitives, but it does **not** expose a production prospect-send path. Runtime mode `production` is rejected. Direct `SEND_PROVIDER` calls fail closed with `CANONICAL_ADAPTER_REQUIRED` and zero provider calls. The only transport-capable handler operation is `SELF_CANARY_SEND`, which requires `canary-send` mode, send enablement and exact sender-to-sender destination equality.
+Direct `SEND_PROVIDER` calls still fail closed with `CANONICAL_ADAPTER_REQUIRED` and zero provider calls. `EXECUTE_FIRST_TOUCH` delegates to `GmailOutreachV2Adapter.execute()` and is disabled unless the runtime is separately placed in `production` mode with sending enabled. The currently governed zero-send configuration therefore remains non-transmitting.
+
+## Canonical Airtable read-only binding
+
+The production adapter reads only exact records in canonical base `appveHEw1HrXr8nD1`. The request must contain exact Activity and Lead record IDs; Campaign `reclIlbWpaTcMrc18` and Command `recpYdDfwJjrpUwyX` are pinned both in the request and deployment configuration. The allowlisted reader issues GET requests only and re-reads current Activity, Lead, Campaign, Command and linked Suppression records immediately before the provider boundary.
+
+Required Netlify production environment bindings are `AIRTABLE_READONLY_TOKEN`, `AIRTABLE_BASE_ID`, `OUTREACH_AIRTABLE_CAMPAIGN_RECORD_ID`, `OUTREACH_AIRTABLE_COMMAND_RECORD_ID`, and `OUTREACH_CORRELATION_DOMAIN`. The token must be limited outside the application to read-only access for the canonical base. Missing, redirected, stale, paused, suppressed, prior-contact, response-priority, payload, or relationship evidence returns HOLD before claim or provider execution.
 
 ## Canonical adapter contract
 
@@ -17,7 +23,7 @@ Provider error handling is explicit and fail-closed: a confirmed pre-invocation 
 
 ## Provider-attempt reservation proof
 
-`PostgresClaimStore.reserveProviderAttempt` uses one atomic conditional `UPDATE` on the same durable Effect row. The transition is permitted only when the exact `effect_key` and `claim_token` match, the Effect is `CLAIMED`, and `provider_invocation_count = 0`. The winning transaction sets the count to exactly `1` and stores the payload/correlation reservation evidence. A concurrent loser or replay receives `EXISTS_HOLD` and cannot create a second reservation.
+`PostgresClaimStore.claim` uses `INSERT … ON CONFLICT DO NOTHING` against the unique EffectKey. `reserveProviderAttempt` uses one atomic conditional `UPDATE` on the same durable Effect row. The transition is permitted only when the exact `effect_key` and `claim_token` match, the Effect is `CLAIMED`, and `provider_invocation_count = 0`; it advances to `INVOCATION_STARTED`. A concurrent loser or replay receives `EXISTS_HOLD`. Confirm, `UNKNOWN_HOLD`, non-retry failure and reconciliation are fenced by the same EffectKey, claim token, deterministic payload fingerprint and provider correlation identity.
 
 The adapter CI integration test runs two same-EffectKey reservations concurrently against PostgreSQL 16 and verifies exactly one `RESERVED`, one `EXISTS_HOLD`, one Effect row, final `provider_invocation_count = 1`, and replay HOLD. Canonical Neon application/binding and zero-send contention were proven separately and remain governed by their own Evidence and Result Check.
 
@@ -25,7 +31,8 @@ The adapter CI integration test runs two same-EffectKey reservations concurrentl
 
 CI now watches `netlify/functions/**`, the root runtime manifest, Netlify config and runtime regression tests. It declares `@neondatabase/serverless`, compiles `slice01.mts`, and tests that:
 
-- `production` runtime mode is unavailable;
+- production execution delegates only through the canonical adapter;
+- zero-send mode rejects First-Touch before Airtable, Postgres or Gmail;
 - direct `SEND_PROVIDER` cannot invoke Gmail;
 - only `SELF_CANARY_SEND` reaches the contained send composition;
 - self-canary destination must equal the configured sender.
@@ -34,6 +41,6 @@ CI now watches `netlify/functions/**`, the root runtime manifest, Netlify config
 
 This repair contains the direct/shared-secret production bypass. It does not activate prospect transmission.
 
-A later production-capable handler must delegate through the reviewed canonical adapter contract (or enforce the identical current Command/Release, frozen payload/recipient/sender, suppression and response-priority boundary) and receive a fresh exact-SHA independent PASS. Gmail account/scope binding, deploy composition, self-canary evidence and Campaign/Runtime/Circuit release remain separate gates.
+The production-capable handler is now wired to the reviewed canonical adapter contract, but code capability is not send authority. The read-only Airtable credential, exact deployment composition, fresh exact-SHA independent PASS and Campaign/Runtime/Circuit release remain separate gates.
 
 PR stays Draft and unmerged until independent review. No Netlify deploy, Gmail send, Airtable authority change, scheduler change or production activation is performed by this source repair.

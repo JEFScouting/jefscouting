@@ -14,7 +14,9 @@ const payload = Object.freeze({
   contractVersion: "outreach-v2", suppressionCleared: true, campaignId: "campaign", leadId: "lead", messageVersion: "v1", sequenceStep: "FU1",
   sequenceInstanceKey: "SEQ|campaign|lead|v1", sequenceVersionSnapshot: "seq-v1", templateVersionSnapshot: "tpl-v3",
   senderIdentitySnapshot: "hello@jefscouting.com", verifiedRecipient: "person@example.com", destination: "person@example.com",
-  finalSubjectSnapshot: "Hello", subject: "Hello", finalBodySnapshot: "Body", textBody: "Body", priorContactSnapshot: "CLEAR"
+  finalSubjectSnapshot: "Hello", subject: "Hello", finalBodySnapshot: "Body", textBody: "Body", priorContactSnapshot: "CLEAR",
+  airtableActivityRecordId: "recAAAAAAAAAAAAAA", airtableLeadRecordId: "recBBBBBBBBBBBBBB",
+  airtableCampaignRecordId: "recCCCCCCCCCCCCCC", airtableCommandRecordId: "recDDDDDDDDDDDDDD", runtimeMode: "production"
 });
 const effectKey = "OUTREACH-SEND|campaign|lead|v1|FU1";
 const claimToken = "11111111-1111-4111-8111-111111111111";
@@ -22,7 +24,7 @@ const activeControls = { adapterBuildEnabled: true, campaign: "ACTIVE", runtime:
 const canonicalBinding = Object.freeze({
   decision: "AUTHORIZED", commandId: "CMD-EXACT-EFFECT", releaseId: "REL-OUTREACH-V2", authorityVersion: "v1", effectKey,
   payloadFingerprint: canonicalPayloadFingerprint(payload), verifiedRecipient: payload.verifiedRecipient,
-  senderIdentity: payload.senderIdentitySnapshot, correlationDomain: "outreach.example.test"
+  senderIdentity: payload.senderIdentitySnapshot, correlationDomain: "outreach.example.test", controls: activeControls
 });
 
 function harness({ claimResult = "WON", safety = true, providerResult = { confirmed: true, providerMessageId: "gmail-1" }, providerError, controls = activeControls, binding = canonicalBinding } = {}) {
@@ -75,10 +77,10 @@ test("correlation identity has stable known value and injected non-invalid domai
   assert.throws(() => gmailCorrelationIdentity(effectKey, "outreach.invalid"), FailClosedError);
 });
 
-test("default PAUSED/NO-GO controls fail before authority/claim and produce zero effects", async () => {
-  const h = harness({ controls: {} });
+test("current authority controls fail before claim and produce zero execution effects", async () => {
+  const h = harness({ controls: {}, binding: { ...canonicalBinding, controls: { ...activeControls, campaign: "HOLD" } } });
   await assert.rejects(h.adapter.execute(request), FailClosedError);
-  assert.deepEqual(h.effects, { authority: 0, claim: 0, safety: 0, reserve: 0, send: 0, lookup: 0, confirm: 0, unknown: 0, fail: 0 });
+  assert.deepEqual(h.effects, { authority: 1, claim: 0, safety: 0, reserve: 0, send: 0, lookup: 0, confirm: 0, unknown: 0, fail: 0 });
 });
 
 test("canonical authority cannot be manufactured by a bare boolean or mismatched effect", async () => {

@@ -7,7 +7,8 @@ export class AmbiguousProviderResult extends Error {}
 const REQUIRED_PAYLOAD_FIELDS = [
   "campaignId", "leadId", "messageVersion", "sequenceStep", "destination", "subject", "textBody",
   "sequenceInstanceKey", "sequenceVersionSnapshot", "templateVersionSnapshot", "senderIdentitySnapshot",
-  "verifiedRecipient", "finalSubjectSnapshot", "finalBodySnapshot", "priorContactSnapshot"
+  "verifiedRecipient", "finalSubjectSnapshot", "finalBodySnapshot", "priorContactSnapshot",
+  "airtableActivityRecordId", "airtableLeadRecordId", "airtableCampaignRecordId", "airtableCommandRecordId", "runtimeMode"
 ];
 
 function nonEmpty(value) { return typeof value === "string" && value.trim() !== ""; }
@@ -24,7 +25,7 @@ function requireCanonicalPayload(payload, effectKey) {
 }
 
 export function canonicalPayloadFingerprint(payload) {
-  const exact = [payload.campaignId,payload.leadId,payload.messageVersion,payload.sequenceStep,payload.sequenceInstanceKey,payload.sequenceVersionSnapshot,payload.templateVersionSnapshot,payload.senderIdentitySnapshot,payload.verifiedRecipient,payload.finalSubjectSnapshot,payload.finalBodySnapshot,payload.priorContactSnapshot];
+  const exact = [payload.campaignId,payload.leadId,payload.messageVersion,payload.sequenceStep,payload.sequenceInstanceKey,payload.sequenceVersionSnapshot,payload.templateVersionSnapshot,payload.senderIdentitySnapshot,payload.verifiedRecipient,payload.finalSubjectSnapshot,payload.finalBodySnapshot,payload.priorContactSnapshot,payload.airtableActivityRecordId,payload.airtableLeadRecordId,payload.airtableCampaignRecordId,payload.airtableCommandRecordId];
   return createHash("sha256").update(JSON.stringify(exact), "utf8").digest("hex");
 }
 
@@ -60,11 +61,11 @@ export class GmailOutreachV2Adapter {
 
   async execute({ payload, effectKey, claimantId, claimToken }) {
     requireCanonicalPayload(payload, effectKey);
-    requireSafeControls(this.controls);
     if (!claimantId || !claimToken) throw new FailClosedError("CLAIM_IDENTITY_REQUIRED");
 
     const binding = await this.executionGate.readCurrent({ payload, effectKey, claimToken });
     requireCanonicalExecutionBinding(binding, { payload, effectKey });
+    requireSafeControls({ ...this.controls, ...binding.controls });
 
     const claim = await this.claimStore.claim({ payload, effectKey, claimantId, claimToken, payloadFingerprint: binding.payloadFingerprint });
     if (claim?.result !== "WON" || claim.record?.effect_key !== effectKey || claim.record?.claim_token !== claimToken) throw new FailClosedError("VALID_SLICE01_WIN_REQUIRED");
