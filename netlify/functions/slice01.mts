@@ -155,10 +155,10 @@ async function gmailSend(accessToken: string, payload: { sender: string; destina
 async function insertEvent(sql: any, input: { effectKey: string; operation: string; result: string; claimToken: string; claimantId: string; providerInvocationCount: number; metadata?: unknown }) {
   await sql`
     INSERT INTO outreach_effect_events (
-      event_id, effect_key, operation, result, claim_token, claimant_id,
+      effect_key, operation, result, claim_token, claimant_id,
       provider_invocation_count, metadata, occurred_at
     ) VALUES (
-      ${crypto.randomUUID()}::uuid, ${input.effectKey}, ${input.operation}, ${input.result},
+      ${input.effectKey}, ${input.operation}, ${input.result},
       ${input.claimToken}::uuid, ${input.claimantId}, ${input.providerInvocationCount},
       ${JSON.stringify(input.metadata || {})}::jsonb, NOW()
     )
