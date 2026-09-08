@@ -4,6 +4,7 @@ const BINDING = Object.freeze({
   bindingId: "CB-NEXT-SLACK-R1-A0BVA18EG4D-T0BC95ACRU5-PROD-A0-C0BCCH6PYAE",
   environment: "Production / Live",
   deployContext: "production",
+  siteId: "2d5cef57-c959-403d-b518-ca5c40ec0462",
   authority: "A0",
   tokenClass: "BOT",
   workspaceId: "T0BC95ACRU5",
@@ -181,7 +182,8 @@ export default async (req: Request, context: RuntimeContext) => {
 
   if (
     context?.deploy?.context !== BINDING.deployContext ||
-    context?.deploy?.published !== true
+    context?.deploy?.published !== true ||
+    context?.site?.id !== BINDING.siteId
   ) {
     return json(
       {
@@ -190,7 +192,9 @@ export default async (req: Request, context: RuntimeContext) => {
         code: "RUNTIME_ENVIRONMENT_MISMATCH",
         expectedEnvironment: BINDING.environment,
         expectedDeployContext: BINDING.deployContext,
+        expectedSiteId: BINDING.siteId,
         observedDeployContext: context?.deploy?.context ?? null,
+        observedSiteId: context?.site?.id ?? null,
         published: context?.deploy?.published === true,
         providerWrites: 0,
         contentReads: 0,
