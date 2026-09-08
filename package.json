@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:outreach-runtime": "esbuild netlify/functions/slice01.mts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=.runtime-build/slice01.mjs && esbuild netlify/functions/outreach-airtable-gate-diagnostic.mts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=.runtime-build/outreach-airtable-gate-diagnostic.mjs",
+    "build:outreach-runtime": "esbuild netlify/functions/slice01.mts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=.runtime-build/slice01.mjs && esbuild netlify/functions/outreach-airtable-gate-diagnostic.mts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=.runtime-build/outreach-airtable-gate-diagnostic.mjs && esbuild netlify/functions/outreach-airtable-gate-diagnostic-once.mts --bundle --platform=node --format=esm --outfile=.runtime-build/outreach-airtable-gate-diagnostic-once.mjs",
     "test:outreach-runtime": "node --test test/outreach-runtime-guard.test.mjs"
   },
   "dependencies": {

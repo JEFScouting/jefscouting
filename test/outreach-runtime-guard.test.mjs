@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../netlify/functions/slice01.mts", import.meta.url), "utf8");
 const diagnosticSource = await readFile(new URL("../netlify/functions/outreach-airtable-gate-diagnostic.mts", import.meta.url), "utf8");
+const oneShotDiagnosticSource = await readFile(new URL("../netlify/functions/outreach-airtable-gate-diagnostic-once.mts", import.meta.url), "utf8");
 
 test("production mode exists only behind the canonical First-Touch adapter", () => {
   assert.match(source, /new Set\(\["zero-send", "canary-send", "production"\]\)/);
@@ -67,4 +68,15 @@ test("Airtable gate diagnostic is shared-secret protected and zero-send only", (
   assert.match(diagnosticSource, /provider_call_count: 0/);
   assert.match(diagnosticSource, /mutation_performed: false/);
   assert.doesNotMatch(diagnosticSource, /GmailApiProvider|gmailSend|sendRaw|PostgresClaimStore|\bPool\b|\bneon\b/);
+});
+
+test("one-shot Airtable diagnostic runner is internal, zero-send, and mutation-free", () => {
+  assert.match(oneShotDiagnosticSource, /OUTREACH_RUNTIME_SHARED_SECRET/);
+  assert.match(oneShotDiagnosticSource, /"x-outreach-runtime-secret": secret/);
+  assert.match(oneShotDiagnosticSource, /runtimeMode !== "zero-send" \|\| sendEnabled/);
+  assert.match(oneShotDiagnosticSource, /recOJ6Z6RYeIwgyQL/);
+  assert.match(oneShotDiagnosticSource, /recpYdDfwJjrpUwyX/);
+  assert.match(oneShotDiagnosticSource, /reclIlbWpaTcMrc18/);
+  assert.equal([...oneShotDiagnosticSource.matchAll(/await fetch\(/g)].length, 1);
+  assert.doesNotMatch(oneShotDiagnosticSource, /GmailApiProvider|gmailSend|sendRaw|PostgresClaimStore|reserveProviderAttempt|claim\(/);
 });
