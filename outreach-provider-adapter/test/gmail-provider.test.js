@@ -19,6 +19,45 @@ test("raw Gmail message binds exact recipient, sender, subject, body and determi
   assert.ok(mime.endsWith("\r\n\r\nBody"));
 });
 
+test("FOLLOW-UP-1 binds exact prior RFC message and Gmail thread", async () => {
+  const followUp = { ...payload, sequenceStep: "FOLLOW-UP-1", priorRfcMessageId: "<prior@example.com>", gmailThreadId: "thread-123" };
+  const mime = decode(buildGmailRawMessage({ payload: followUp, identity, from: authorizedSenderIdentity }));
+  assert.match(mime, /\r\nIn-Reply-To: <prior@example\.com>\r\nReferences: <prior@example\.com>\r\n/);
+  let args;
+  const provider = new GmailApiProvider({ from: authorizedSenderIdentity, transport: {
+    async sendRaw(input) { args = input; return { id: "gmail-fu-1", threadId: "thread-123" }; },
+    async lookupByRfcMessageId() { return null; }
+  }});
+  assert.deepEqual(await provider.sendOnce({ payload: followUp, identity, authorizedSenderIdentity }), { confirmed: true, providerMessageId: "gmail-fu-1", providerThreadId: "thread-123", outcome: "SENT" });
+  assert.equal(args.threadId, "thread-123");
+});
+
+test("FOLLOW-UP-1 fails closed before provider when thread evidence is incomplete", async () => {
+  for (const bad of [
+    { ...payload, sequenceStep: "FOLLOW-UP-1", gmailThreadId: "thread-123" },
+    { ...payload, sequenceStep: "FOLLOW-UP-1", priorRfcMessageId: "<prior@example.com>" }
+  ]) {
+    let calls = 0;
+    const provider = new GmailApiProvider({ from: authorizedSenderIdentity, transport: {
+      async sendRaw() { calls++; return { id: "must-not-send", threadId: "thread-123" }; },
+      async lookupByRfcMessageId() { return null; }
+    }});
+    await assert.rejects(provider.sendOnce({ payload: bad, identity, authorizedSenderIdentity }), FailClosedError);
+    assert.equal(calls, 0);
+  }
+});
+
+test("FOLLOW-UP-1 treats wrong thread acknowledgement as ambiguous and never retries", async () => {
+  let calls = 0;
+  const followUp = { ...payload, sequenceStep: "FOLLOW-UP-1", priorRfcMessageId: "<prior@example.com>", gmailThreadId: "thread-123" };
+  const provider = new GmailApiProvider({ from: authorizedSenderIdentity, transport: {
+    async sendRaw() { calls++; return { id: "gmail-fu-1", threadId: "wrong-thread" }; },
+    async lookupByRfcMessageId() { return null; }
+  }});
+  await assert.rejects(provider.sendOnce({ payload: followUp, identity, authorizedSenderIdentity }), AmbiguousProviderResult);
+  assert.equal(calls, 1);
+});
+
 test("header injection is rejected before transport", () => {
   for (const bad of [
     { ...payload, destination: "person@example.com\r\nBcc: attacker@example.com" },
@@ -32,7 +71,7 @@ test("confirmed send maps provider id and performs exactly one transport call", 
     async sendRaw() { calls++; return { id: "gmail-123" }; },
     async lookupByRfcMessageId() { throw new Error("not expected"); }
   }});
-  assert.deepEqual(await provider.sendOnce({ payload, identity, authorizedSenderIdentity }), { confirmed: true, providerMessageId: "gmail-123", outcome: "SENT" });
+  assert.deepEqual(await provider.sendOnce({ payload, identity, authorizedSenderIdentity }), { confirmed: true, providerMessageId: "gmail-123", providerThreadId: null, outcome: "SENT" });
   assert.equal(calls, 1);
 });
 
@@ -72,6 +111,6 @@ test("lookup reconciles only by deterministic RFC Message-ID and never sends", a
     async sendRaw() { sends++; return { id: "unexpected" }; },
     async lookupByRfcMessageId({ rfcMessageId }) { lookups++; assert.equal(rfcMessageId, identity.rfcMessageId); return { id: "gmail-123" }; }
   }});
-  assert.deepEqual(await provider.lookup({ identity }), { confirmed: true, providerMessageId: "gmail-123", outcome: "SENT" });
+  assert.deepEqual(await provider.lookup({ identity }), { confirmed: true, providerMessageId: "gmail-123", providerThreadId: null, outcome: "SENT" });
   assert.equal(sends, 0); assert.equal(lookups, 1);
 });
