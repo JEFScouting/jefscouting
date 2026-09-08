@@ -2,6 +2,10 @@ const SLACK_API_BASE = "https://slack.com/api";
 
 const BINDING = Object.freeze({
   bindingId: "CB-NEXT-SLACK-R1-A0BVA18EG4D-T0BC95ACRU5-PROD-A0-C0BCCH6PYAE",
+  environment: "Production / Live",
+  deployContext: "production",
+  authority: "A0",
+  tokenClass: "BOT",
   workspaceId: "T0BC95ACRU5",
   channelId: "C0BCCH6PYAE",
   apiAppId: "A0BVA18EG4D",
@@ -13,6 +17,28 @@ const BINDING = Object.freeze({
 const MAX_CANARY_MESSAGES = 1;
 
 type Operation = "PRECHECK" | "READ_CANARY";
+
+type InvocationRequest = {
+  operation?: Operation;
+  bindingId?: string;
+  environment?: string;
+  authority?: string;
+  tokenClass?: string;
+  resourceId?: string;
+};
+
+type RuntimeContext = {
+  deploy?: {
+    context?: string;
+    id?: string;
+    published?: boolean;
+  };
+  site?: {
+    id?: string;
+    name?: string;
+    url?: string;
+  };
+};
 
 type SlackAuthTest = {
   ok?: boolean;
@@ -148,9 +174,29 @@ async function runPrecheck(token: string) {
   };
 }
 
-export default async (req: Request) => {
+export default async (req: Request, context: RuntimeContext) => {
   if (req.method !== "POST") {
     return json({ success: false, error: "Method not allowed" }, 405);
+  }
+
+  if (
+    context?.deploy?.context !== BINDING.deployContext ||
+    context?.deploy?.published !== true
+  ) {
+    return json(
+      {
+        success: false,
+        state: "HOLD",
+        code: "RUNTIME_ENVIRONMENT_MISMATCH",
+        expectedEnvironment: BINDING.environment,
+        expectedDeployContext: BINDING.deployContext,
+        observedDeployContext: context?.deploy?.context ?? null,
+        published: context?.deploy?.published === true,
+        providerWrites: 0,
+        contentReads: 0,
+      },
+      409,
+    );
   }
 
   const runtimeSecret = Netlify.env.get("NEXT_SLACK_R1_RUNTIME_SECRET");
@@ -172,9 +218,9 @@ export default async (req: Request) => {
     return json({ success: false, error: "Unauthorized" }, 401);
   }
 
-  let body: { operation?: Operation } = {};
+  let body: InvocationRequest = {};
   try {
-    body = (await req.json()) as { operation?: Operation };
+    body = (await req.json()) as InvocationRequest;
   } catch {
     return json({ success: false, error: "Invalid JSON" }, 400);
   }
@@ -182,6 +228,29 @@ export default async (req: Request) => {
   const operation = body.operation;
   if (operation !== "PRECHECK" && operation !== "READ_CANARY") {
     return json({ success: false, error: "Unsupported operation" }, 400);
+  }
+
+  const envelopeMatches = {
+    bindingId: body.bindingId === BINDING.bindingId,
+    environment: body.environment === BINDING.environment,
+    authority: body.authority === BINDING.authority,
+    tokenClass: body.tokenClass === BINDING.tokenClass,
+    resourceId: body.resourceId === BINDING.channelId,
+  };
+
+  if (Object.values(envelopeMatches).some((matches) => !matches)) {
+    return json(
+      {
+        success: false,
+        state: "HOLD",
+        operation,
+        code: "INVOCATION_ENVELOPE_MISMATCH",
+        envelopeMatches,
+        providerWrites: 0,
+        contentReads: 0,
+      },
+      409,
+    );
   }
 
   try {
@@ -207,6 +276,12 @@ export default async (req: Request) => {
         observedAt: new Date().toISOString(),
         providerWrites: 0,
         contentReads: 0,
+        deployment: {
+          context: context.deploy.context,
+          deployId: context.deploy.id ?? null,
+          published: true,
+          siteId: context.site?.id ?? null,
+        },
         ...precheck,
       });
     }
@@ -305,7 +380,8 @@ export default async (req: Request) => {
       rawMessageContentReturned: false,
     });
   } catch (error) {
-    console.error("NEXT Slack R1 governed read failure", error);
+    const failureClass = error instanceof Error ? error.name : "UnknownError";
+    console.error("NEXT Slack R1 governed read failure", { failureClass });
     return json(
       {
         success: false,
