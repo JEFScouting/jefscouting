@@ -80,3 +80,11 @@ test("one-shot Airtable diagnostic runner is internal, zero-send, and mutation-f
   assert.equal([...oneShotDiagnosticSource.matchAll(/await fetch\(/g)].length, 1);
   assert.doesNotMatch(oneShotDiagnosticSource, /GmailApiProvider|gmailSend|sendRaw|PostgresClaimStore|reserveProviderAttempt|claim\(/);
 });
+
+
+test("runtime binds Follow-Up Gmail thread and fresh mailbox reality before adapter execution", () => {
+  assert.match(source, /JSON\.stringify\(threadId \? \{ raw, threadId \} : \{ raw \}\)/);
+  assert.match(source, /async function freshMailboxReality\(payload: any\)/);
+  assert.match(source, /result: "NO_OP_STALE_MAILBOX"/);
+  assert.match(source, /op === "EXECUTE_FIRST_TOUCH" \|\| op === "EXECUTE_FOLLOW_UP"/);
+});

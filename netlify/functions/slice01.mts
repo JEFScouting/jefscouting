@@ -4,7 +4,7 @@ import { AirtableOutreachGates, AirtableReadOnlyClient, JEF_AIRTABLE } from "../
 import { GmailApiProvider } from "../../outreach-provider-adapter/src/gmail-provider.js";
 import { PostgresClaimStore } from "../../outreach-provider-adapter/src/postgres-claim-store.js";
 
-const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.4-direct-send-contained";
+const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.5-threaded-followup-preflight";
 const EFFECT_PREFIX = "OUTREACH-SEND";
 const REQUIRED_GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
@@ -156,11 +156,11 @@ async function gmailSend(accessToken: string, payload: { sender: string; destina
   return { ok: resp.ok, status: resp.status, messageId: data?.id || null, threadId: data?.threadId || null };
 }
 
-async function gmailSendRaw(accessToken: string, raw: string) {
+async function gmailSendRaw(accessToken: string, raw: string, threadId?: string) {
   const resp = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
     method: "POST",
     headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-    body: JSON.stringify({ raw }),
+    body: JSON.stringify(threadId ? { raw, threadId } : { raw }),
   });
   const data: any = await resp.json().catch(() => ({}));
   if (!resp.ok) {
@@ -169,6 +169,73 @@ async function gmailSendRaw(accessToken: string, raw: string) {
     throw error;
   }
   return data;
+}
+
+function gmailHeader(message: any, name: string) {
+  const headers = message?.payload?.headers || [];
+  const found = headers.find((header: any) => String(header?.name || "").toLowerCase() === name.toLowerCase());
+  return String(found?.value || "").trim();
+}
+
+async function gmailSearchIds(accessToken: string, query: string, maxResults = 25) {
+  const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+  url.searchParams.set("q", query);
+  url.searchParams.set("maxResults", String(maxResults));
+  const resp = await fetch(url, { headers: { authorization: `Bearer ${accessToken}` } });
+  const data: any = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(`GMAIL_REALITY_SEARCH_FAILED_${resp.status}`);
+  return Array.isArray(data.messages) ? data.messages : [];
+}
+
+async function gmailReadThread(accessToken: string, threadId: string) {
+  const safeThreadId = String(threadId || "").trim();
+  if (!safeThreadId || /[\r\n\0]/.test(safeThreadId)) throw new FailClosedError("GMAIL_THREAD_ID_REQUIRED");
+  const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(safeThreadId)}`);
+  url.searchParams.set("format", "metadata");
+  for (const name of ["From", "To", "Subject", "Message-ID"]) url.searchParams.append("metadataHeaders", name);
+  const resp = await fetch(url, { headers: { authorization: `Bearer ${accessToken}` } });
+  const data: any = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(`GMAIL_THREAD_READ_FAILED_${resp.status}`);
+  return data;
+}
+
+async function freshMailboxReality(payload: any) {
+  const auth = await oauthAccessToken();
+  const profile = await gmailProfile(auth.accessToken);
+  if (String(profile.emailAddress).toLowerCase() !== String(auth.sender).toLowerCase()) throw new FailClosedError("GMAIL_SENDER_IDENTITY_MISMATCH");
+  const destination = String(payload?.destination || "").trim();
+  if (!destination || /[\r\n\0]/.test(destination)) throw new FailClosedError("GMAIL_REALITY_DESTINATION_REQUIRED");
+  const step = String(payload?.sequenceStep || "").toUpperCase();
+
+  if (step === "FIRST-TOUCH") {
+    const [sent, inbound] = await Promise.all([
+      gmailSearchIds(auth.accessToken, `in:sent to:${destination}`, 1),
+      gmailSearchIds(auth.accessToken, `from:${destination}`, 1),
+    ]);
+    if (sent.length || inbound.length) return { clear: false, reason: "PRIOR_CONTACT_PRESENT", evidenceCount: sent.length + inbound.length };
+    return { clear: true, reason: "FRESH_FIRST_TOUCH_CLEAR", threadId: null };
+  }
+
+  if (step === "FOLLOW-UP-1") {
+    const threadId = String(payload?.gmailThreadId || "").trim();
+    const priorRfc = normalizeRfcMessageId(String(payload?.priorRfcMessageId || ""));
+    if (!threadId || !priorRfc) throw new FailClosedError("FOLLOW_UP_THREAD_EVIDENCE_REQUIRED");
+    const thread: any = await gmailReadThread(auth.accessToken, threadId);
+    const messages = Array.isArray(thread?.messages) ? thread.messages : [];
+    const prior = messages.find((message: any) => normalizeRfcMessageId(gmailHeader(message, "Message-ID")) === priorRfc);
+    if (!prior) throw new FailClosedError("FOLLOW_UP_PRIOR_MESSAGE_NOT_IN_THREAD");
+    const priorTime = Number(prior.internalDate || 0);
+    const later = messages.filter((message: any) => Number(message.internalDate || 0) > priorTime);
+    const destinationLower = destination.toLowerCase();
+    const senderLower = String(auth.sender).toLowerCase();
+    const inbound = later.filter((message: any) => gmailHeader(message, "From").toLowerCase().includes(destinationLower));
+    const outbound = later.filter((message: any) => gmailHeader(message, "From").toLowerCase().includes(senderLower) && gmailHeader(message, "To").toLowerCase().includes(destinationLower));
+    if (inbound.length) return { clear: false, reason: "REPLY_PRESENT", evidenceCount: inbound.length, threadId };
+    if (outbound.length) return { clear: false, reason: "FOLLOW_UP_ALREADY_SENT", evidenceCount: outbound.length, threadId };
+    return { clear: true, reason: "FRESH_FOLLOW_UP_CLEAR", threadId };
+  }
+
+  throw new FailClosedError("UNSUPPORTED_SEQUENCE_STEP");
 }
 
 function canonicalGmailTransport() {
@@ -183,9 +250,9 @@ function canonicalGmailTransport() {
   return {
     sender,
     transport: {
-      sendRaw: async ({ raw }: { raw: string }) => {
+      sendRaw: async ({ raw, threadId }: { raw: string; threadId?: string }) => {
         const auth = await authorize();
-        return gmailSendRaw(auth.accessToken, raw);
+        return gmailSendRaw(auth.accessToken, raw, threadId);
       },
       lookupByRfcMessageId: async ({ rfcMessageId }: { rfcMessageId: string }) => {
         const auth = await authorize();
@@ -212,6 +279,11 @@ async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtim
   const gates = new AirtableOutreachGates({ client, commandRecordId, campaignRecordId, correlationDomain });
   const pool = new Pool({ connectionString: databaseUrl });
   try {
+    const payload = { ...(args.payload || {}), runtimeMode };
+    const reality = await freshMailboxReality(payload);
+    if (!reality.clear) {
+      return json(200, { ok: true, result: "NO_OP_STALE_MAILBOX", stale_reason: reality.reason, mailbox_evidence_count: reality.evidenceCount ?? null, provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
+    }
     const gmail = canonicalGmailTransport();
     const adapter = new GmailOutreachV2Adapter({
       claimStore: new PostgresClaimStore({ pool }),
@@ -220,7 +292,6 @@ async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtim
       gmailProvider: new GmailApiProvider({ transport: gmail.transport, from: gmail.sender }),
       controls: { adapterBuildEnabled: true },
     });
-    const payload = { ...(args.payload || {}), runtimeMode };
     const result = await adapter.execute({ payload, effectKey: args.effect_key, claimantId: args.claimant_id, claimToken: args.claim_token });
     return json(200, { ok: true, ...result, provider_send_called: result.result === "CONFIRMED", provider_call_count: result.result === "CONFIRMED" || result.result === "UNKNOWN_HOLD" ? 1 : 0, automatic_retry: false, version: VERSION });
   } finally {
@@ -337,12 +408,12 @@ export default async (req: Request) => {
 
   const sql = neon(databaseUrl);
 
-  if (op === "EXECUTE_FIRST_TOUCH") {
+  if (op === "EXECUTE_FIRST_TOUCH" || op === "EXECUTE_FOLLOW_UP") {
     try {
       return await executeCanonicalFirstTouch(args, databaseUrl, runtimeMode, sendEnabled);
     } catch (error: any) {
       const status = error instanceof FailClosedError ? 409 : 502;
-      return json(status, { ok: false, error: String(error?.message || "FIRST_TOUCH_EXECUTION_FAILED"), provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
+      return json(status, { ok: false, error: String(error?.message || "OUTREACH_EXECUTION_FAILED"), provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
     }
   }
 

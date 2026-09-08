@@ -20,12 +20,18 @@ function requireCanonicalPayload(payload, effectKey) {
   if (payload.destination !== payload.verifiedRecipient) throw new FailClosedError("VERIFIED_RECIPIENT_MISMATCH");
   if (payload.subject !== payload.finalSubjectSnapshot) throw new FailClosedError("FINAL_SUBJECT_SNAPSHOT_MISMATCH");
   if (payload.textBody !== payload.finalBodySnapshot) throw new FailClosedError("FINAL_BODY_SNAPSHOT_MISMATCH");
+  if (payload.sequenceStep === "FOLLOW-UP-1") {
+    if (!nonEmpty(payload.gmailThreadId) || !nonEmpty(payload.priorRfcMessageId)) throw new FailClosedError("FOLLOW_UP_THREAD_EVIDENCE_REQUIRED");
+  } else if (payload.gmailThreadId || payload.priorRfcMessageId) {
+    throw new FailClosedError("THREAD_EVIDENCE_FORBIDDEN_OUTSIDE_FOLLOW_UP");
+  }
   const expected = ["OUTREACH-SEND", payload.campaignId, payload.leadId, payload.messageVersion, payload.sequenceStep].join("|");
   if (!effectKey || effectKey !== expected) throw new FailClosedError("EFFECT_KEY_MISMATCH");
 }
 
 export function canonicalPayloadFingerprint(payload) {
   const exact = [payload.campaignId,payload.leadId,payload.messageVersion,payload.sequenceStep,payload.sequenceInstanceKey,payload.sequenceVersionSnapshot,payload.templateVersionSnapshot,payload.senderIdentitySnapshot,payload.verifiedRecipient,payload.finalSubjectSnapshot,payload.finalBodySnapshot,payload.priorContactSnapshot,payload.airtableActivityRecordId,payload.airtableLeadRecordId,payload.airtableCampaignRecordId,payload.airtableCommandRecordId];
+  if (payload.sequenceStep === "FOLLOW-UP-1") exact.push(payload.gmailThreadId, payload.priorRfcMessageId);
   return createHash("sha256").update(JSON.stringify(exact), "utf8").digest("hex");
 }
 
