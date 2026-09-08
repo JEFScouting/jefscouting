@@ -228,10 +228,10 @@ export async function finishCanonicalTrace(
           fields: {
             "Evidence ID": evidenceId,
             "Evidence Type": "Runtime Proof",
-            "Related Record / Subject": "NEXT v2 Implementation — CP04 Slack R1 Stable Workspace Identity Binding",
+            "Related Object": "NEXT v2 Implementation — CP04 Slack R1 Stable Workspace Identity Binding",
+            "Related Object ID": input.runtimeRunId,
             "Evidence Date": input.completedAt,
-            "Source Link": PR_URL,
-            "Record Environment": "Production / Live",
+            "File Link": PR_URL,
             Notes: JSON.stringify({
               runtime_run_id: input.runtimeRunId,
               event_id: eventId,
