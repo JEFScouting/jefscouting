@@ -1,4 +1,7 @@
 const NEXT_BASE_ID = "appBUnJ5tQSKXAoA2";
+const NEXT_COMMANDS_TABLE = "tbl6qsFiNpFKjDoYx";
+const NEXT_APPROVALS_TABLE = "tbldSBuGWIdGtMYtd";
+const NEXT_RELEASES_TABLE = "tbleUiVeDG8hNimPK";
 const NEXT_RUNTIME_RUNS_TABLE = "tblNe1vDlPjcSDEDC";
 const NEXT_EVENTS_TABLE = "tblcDIssO3HoqsxuZ";
 const JEF_BASE_ID = "appveHEw1HrXr8nD1";
@@ -8,6 +11,12 @@ const WORKFLOW_ID = "ENG-NEXT-RUNTIME-ADAPTER-LAYER";
 const WORKFLOW_VERSION = "SLACK-R1-A0-v1.0";
 const ADAPTER_ID = "ADP-NEXT-SLACK-01";
 const PR_URL = "https://github.com/JEFScouting/jefscouting/pull/29";
+const RELEASE_TARGET_SYSTEM = "Slack";
+const RELEASE_TYPE = "Configuration Release";
+const REQUIRED_AUTHORITY = "A0";
+const REQUIRED_PROVIDER_METHODS = ["auth.test", "conversations.history"] as const;
+
+type Operation = "PRECHECK" | "READ_CANARY";
 
 type TraceStart = {
   runtimeRunId: string;
@@ -15,7 +24,7 @@ type TraceStart = {
   effectKey: string;
   commandId: string;
   releaseId: string;
-  operation: "PRECHECK" | "READ_CANARY";
+  operation: Operation;
   bindingId: string;
   resourceId: string;
   deployId: string | null;
@@ -42,6 +51,17 @@ type AirtableResponse = {
   records?: AirtableRecord[];
   error?: { type?: string; message?: string };
 };
+
+type AuthorityResult =
+  | {
+      ok: true;
+      commandRecordId: string;
+      approvalRecordId: string;
+      releaseRecordId: string;
+      approvalId: string;
+      releaseAuthorizedAt: string;
+    }
+  | { ok: false; code: string };
 
 function apiUrl(baseId: string, tableId: string, query = "") {
   return `https://api.airtable.com/v0/${baseId}/${tableId}${query}`;
@@ -79,6 +99,157 @@ function escapeFormula(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
+function asString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function selectName(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "name" in value) {
+    return asString((value as { name?: unknown }).name);
+  }
+  return "";
+}
+
+function containsAll(haystack: unknown, required: readonly string[]): boolean {
+  const normalized = asString(haystack).toLowerCase();
+  return required.every((value) => normalized.includes(value.toLowerCase()));
+}
+
+async function findUniqueByField(
+  token: string,
+  tableId: string,
+  fieldName: string,
+  value: string,
+): Promise<{ state: "one"; record: AirtableRecord } | { state: "missing" | "duplicate" }> {
+  const formula = encodeURIComponent(`{${fieldName}}='${escapeFormula(value)}'`);
+  const payload = await airtableRequest(
+    token,
+    NEXT_BASE_ID,
+    tableId,
+    { method: "GET" },
+    `?maxRecords=2&filterByFormula=${formula}`,
+  );
+  const records = payload.records ?? [];
+  if (records.length === 0) return { state: "missing" };
+  if (records.length !== 1) return { state: "duplicate" };
+  return { state: "one", record: records[0] };
+}
+
+export async function validateCanonicalAuthority(
+  token: string,
+  input: TraceStart,
+): Promise<AuthorityResult> {
+  const commandLookup = await findUniqueByField(
+    token,
+    NEXT_COMMANDS_TABLE,
+    "Command ID",
+    input.commandId,
+  );
+  if (commandLookup.state === "missing") return { ok: false, code: "COMMAND_NOT_FOUND" };
+  if (commandLookup.state === "duplicate") return { ok: false, code: "COMMAND_ID_DUPLICATE" };
+
+  const commandFields = commandLookup.record.fields ?? {};
+  if (asString(commandFields["Tenant ID"]) !== TENANT_ID) {
+    return { ok: false, code: "COMMAND_TENANT_MISMATCH" };
+  }
+  if (selectName(commandFields.Status) !== "Approved") {
+    return { ok: false, code: "COMMAND_NOT_APPROVED" };
+  }
+  if (selectName(commandFields["Command Type"]) !== "Release") {
+    return { ok: false, code: "COMMAND_TYPE_MISMATCH" };
+  }
+  if (!containsAll(commandFields.Authority, [REQUIRED_AUTHORITY])) {
+    return { ok: false, code: "COMMAND_AUTHORITY_MISMATCH" };
+  }
+
+  const releaseLookup = await findUniqueByField(
+    token,
+    NEXT_RELEASES_TABLE,
+    "Release ID",
+    input.releaseId,
+  );
+  if (releaseLookup.state === "missing") return { ok: false, code: "RELEASE_NOT_FOUND" };
+  if (releaseLookup.state === "duplicate") return { ok: false, code: "RELEASE_ID_DUPLICATE" };
+
+  const releaseFields = releaseLookup.record.fields ?? {};
+  if (asString(releaseFields["Tenant ID"]) !== TENANT_ID) {
+    return { ok: false, code: "RELEASE_TENANT_MISMATCH" };
+  }
+  if (selectName(releaseFields.Status) !== "Approved") {
+    return { ok: false, code: "RELEASE_NOT_APPROVED" };
+  }
+  if (selectName(releaseFields["Release Type"]) !== RELEASE_TYPE) {
+    return { ok: false, code: "RELEASE_TYPE_MISMATCH" };
+  }
+  if (asString(releaseFields["Command ID"]) !== input.commandId) {
+    return { ok: false, code: "RELEASE_COMMAND_MISMATCH" };
+  }
+  if (asString(releaseFields["Target System"]) !== RELEASE_TARGET_SYSTEM) {
+    return { ok: false, code: "RELEASE_TARGET_SYSTEM_MISMATCH" };
+  }
+  if (!containsAll(releaseFields["Target Resource"], [input.bindingId, input.resourceId])) {
+    return { ok: false, code: "RELEASE_TARGET_RESOURCE_MISMATCH" };
+  }
+  if (
+    !containsAll(releaseFields["Allowed Fields / Action"], [
+      REQUIRED_AUTHORITY,
+      ...REQUIRED_PROVIDER_METHODS,
+      input.resourceId,
+      "zero writes",
+    ])
+  ) {
+    return { ok: false, code: "RELEASE_ACTION_SCOPE_MISMATCH" };
+  }
+  if (!asString(releaseFields["Precondition Check IDs"])) {
+    return { ok: false, code: "RELEASE_PRECONDITIONS_MISSING" };
+  }
+  if (!asString(releaseFields["Idempotency Key"])) {
+    return { ok: false, code: "RELEASE_IDEMPOTENCY_MISSING" };
+  }
+  if (!asString(releaseFields["Rollback Reference"])) {
+    return { ok: false, code: "RELEASE_ROLLBACK_MISSING" };
+  }
+  const releaseAuthorizedAt = asString(releaseFields["Authorized At"]);
+  if (!releaseAuthorizedAt) {
+    return { ok: false, code: "RELEASE_AUTHORIZATION_TIMESTAMP_MISSING" };
+  }
+
+  const approvalId = asString(releaseFields["Approval ID"]);
+  if (!approvalId || asString(commandFields["Approval ID"]) !== approvalId) {
+    return { ok: false, code: "APPROVAL_BINDING_MISMATCH" };
+  }
+
+  const approvalLookup = await findUniqueByField(
+    token,
+    NEXT_APPROVALS_TABLE,
+    "Approval ID",
+    approvalId,
+  );
+  if (approvalLookup.state === "missing") return { ok: false, code: "APPROVAL_NOT_FOUND" };
+  if (approvalLookup.state === "duplicate") return { ok: false, code: "APPROVAL_ID_DUPLICATE" };
+
+  const approvalFields = approvalLookup.record.fields ?? {};
+  if (asString(approvalFields["Tenant ID"]) !== TENANT_ID) {
+    return { ok: false, code: "APPROVAL_TENANT_MISMATCH" };
+  }
+  if (selectName(approvalFields.Status) !== "Approved") {
+    return { ok: false, code: "APPROVAL_NOT_APPROVED" };
+  }
+  if (selectName(approvalFields["Separation of Duties Check"]) !== "Passed") {
+    return { ok: false, code: "APPROVAL_SOD_NOT_PASSED" };
+  }
+
+  return {
+    ok: true,
+    commandRecordId: commandLookup.record.id,
+    approvalRecordId: approvalLookup.record.id,
+    releaseRecordId: releaseLookup.record.id,
+    approvalId,
+    releaseAuthorizedAt,
+  };
+}
+
 async function findRuntimeRun(token: string, runtimeRunId: string) {
   const formula = encodeURIComponent(`{Run ID}='${escapeFormula(runtimeRunId)}'`);
   const payload = await airtableRequest(
@@ -109,6 +280,11 @@ function traceNotes(input: TraceStart, lifecycle: string, extra: Record<string, 
 }
 
 export async function beginCanonicalTrace(token: string, input: TraceStart) {
+  const authority = await validateCanonicalAuthority(token, input);
+  if (!authority.ok) {
+    return { ok: false as const, code: authority.code };
+  }
+
   const existing = await findRuntimeRun(token, input.runtimeRunId);
   if (existing) {
     return { ok: false as const, code: "RUNTIME_RUN_ID_REPLAY", recordId: existing.id };
@@ -139,6 +315,12 @@ export async function beginCanonicalTrace(token: string, input: TraceStart) {
                 provider_calls: 0,
                 provider_writes: 0,
                 content_reads: 0,
+                authority_validated: true,
+                command_record_id: authority.commandRecordId,
+                approval_record_id: authority.approvalRecordId,
+                release_record_id: authority.releaseRecordId,
+                approval_id: authority.approvalId,
+                release_authorized_at: authority.releaseAuthorizedAt,
               }),
             },
           },
