@@ -21,6 +21,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: false
       - name: Run zero-provider fixture tests
         run: node --test test/next-slack-r1-read.test.mjs
