@@ -7,6 +7,7 @@ const { default: handler } = await import(
 
 const exactBindingId =
   "CB-NEXT-SLACK-R1-A0BVA18EG4D-T0BC95ACRU5-PROD-A0-C0BCCH6PYAE";
+const exactSiteId = "2d5cef57-c959-403d-b518-ca5c40ec0462";
 const exactScopes = "channels:history,channels:read";
 const exactIdentity = {
   ok: true,
@@ -65,7 +66,7 @@ function response(payload, scopes = exactScopes, status = 200) {
 function productionContext(overrides = {}) {
   return {
     deploy: { context: "production", id: "fixture-deploy", published: true },
-    site: { id: "fixture-site", name: "fixture", url: "https://fixture.invalid" },
+    site: { id: exactSiteId, name: "jef-next-slack-r1", url: "https://fixture.invalid" },
     ...overrides,
   };
 }
@@ -137,6 +138,28 @@ test("non-production deployment fails before provider access", async () => {
   assert.equal(calls, 0);
 });
 
+test("wrong Netlify site fails before provider access", async () => {
+  configureEnv();
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return response(exactIdentity);
+  };
+  const result = await handler(
+    request({}),
+    productionContext({
+      site: { id: "wrong-site", name: "wrong", url: "https://wrong.invalid" },
+    }),
+  );
+  const body = await bodyOf(result);
+  assert.equal(result.status, 409);
+  assert.equal(body.state, "HOLD");
+  assert.equal(body.code, "RUNTIME_ENVIRONMENT_MISMATCH");
+  assert.equal(body.expectedSiteId, exactSiteId);
+  assert.equal(body.observedSiteId, "wrong-site");
+  assert.equal(calls, 0);
+});
+
 for (const [name, mutation] of [
   ["authority above A0", { authority: "A3" }],
   ["wrong resource", { resourceId: "C-WRONG" }],
@@ -204,6 +227,7 @@ test("PRECHECK performs auth.test only and returns no content or secret", async 
   assert.equal(body.state, "PRECHECK_PASS");
   assert.equal(body.contentReads, 0);
   assert.equal(body.providerWrites, 0);
+  assert.equal(body.deployment.siteId, exactSiteId);
   assert.deepEqual(paths, ["https://slack.com/api/auth.test"]);
   assert.equal(JSON.stringify(body).includes("fixture-bot-token"), false);
   assert.equal(JSON.stringify(body).includes("fixture-runtime-secret"), false);
