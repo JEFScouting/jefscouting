@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../netlify/functions/slice01.mts", import.meta.url), "utf8");
 const diagnosticSource = await readFile(new URL("../netlify/functions/outreach-airtable-gate-diagnostic.mts", import.meta.url), "utf8");
 const oneShotDiagnosticSource = await readFile(new URL("../netlify/functions/outreach-airtable-gate-diagnostic-once.mts", import.meta.url), "utf8");
+const netlifyConfigSource = await readFile(new URL("../netlify.toml", import.meta.url), "utf8");
 const motekEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-001|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
 const otherEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-OTHER|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
+const motekEffectKeySha256 = createHash("sha256").update(motekEffectKey,"utf8").digest("hex");
 
 function runtimeEnv(overrides={}) {
   return {
@@ -93,6 +96,25 @@ test("one-EffectKey canary authority is exact, Follow-Up-only, and zero-send-onl
     {...exact,runtimeMode:"production",sendEnabled:false},
     {...exact,runtimeMode:"zero-send",sendEnabled:true},
   ]) assert.equal(hasExactFollowUpCanaryAuthority(changed),false);
+});
+
+test("production config carries one exact non-secret binding and live identity exposes only its digest", async () => {
+  const configured=[...netlifyConfigSource.matchAll(/^\s*OUTREACH_CANARY_EFFECT_KEY\s*=\s*"([^"]*)"\s*$/gm)].map((match)=>match[1]);
+  assert.deepEqual(configured,[motekEffectKey]);
+  const originalFetch=globalThis.fetch;
+  globalThis.fetch=async()=>{throw new Error("EXTERNAL_CALL_FORBIDDEN");};
+  globalThis.Netlify={env:{get(key){return key==="OUTREACH_CANARY_EFFECT_KEY"?motekEffectKey:"";}}};
+  try {
+    const {default:handler}=await import(new URL(`../.runtime-build/slice01.mjs?identity=${Date.now()}`,import.meta.url));
+    const response=await handler(new Request("https://runtime.invalid/slice01"));
+    const body=await response.json();
+    assert.equal(response.status,405);
+    assert.equal(body.canary_effect_key_configured,true);
+    assert.equal(body.canary_effect_key_sha256,motekEffectKeySha256);
+    assert.equal(body.canary_operation,"EXECUTE_FOLLOW_UP");
+    assert.equal(body.canary_sequence_step,"FOLLOW-UP-1");
+    assert.equal(JSON.stringify(body).includes(motekEffectKey),false);
+  } finally { globalThis.fetch=originalFetch; delete globalThis.Netlify; }
 });
 
 test("non-exact canary requests and direct SEND_PROVIDER stay blocked with zero external calls", async () => {

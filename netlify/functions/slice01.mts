@@ -46,6 +46,13 @@ function isEffectKey(value: string) {
   return /^OUTREACH-SEND\|[^|]+\|[^|]+\|[^|]+\|[^|]+$/.test(value);
 }
 
+function configuredFollowUpCanaryEffectKey(value: unknown) {
+  if (typeof value !== "string" || value !== value.trim()) return "";
+  const parts = value.split("|");
+  if (parts.length !== 5 || parts[0] !== EFFECT_PREFIX || parts[4] !== "FOLLOW-UP-1") return "";
+  return parts.slice(1).every((part) => /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(part)) ? value : "";
+}
+
 export function hasExactFollowUpCanaryAuthority({
   configuredEffectKey,
   operation,
@@ -62,12 +69,10 @@ export function hasExactFollowUpCanaryAuthority({
   sendEnabled: unknown;
 }) {
   if (runtimeMode !== "zero-send" || sendEnabled !== false) return false;
-  if (typeof configuredEffectKey !== "string" || configuredEffectKey !== configuredEffectKey.trim()) return false;
-  const parts = configuredEffectKey.split("|");
-  if (parts.length !== 5 || parts[0] !== EFFECT_PREFIX || parts[4] !== "FOLLOW-UP-1") return false;
-  if (!parts.slice(1).every((part) => /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(part))) return false;
+  const exactBinding = configuredFollowUpCanaryEffectKey(configuredEffectKey);
+  if (!exactBinding) return false;
   return operation === "EXECUTE_FOLLOW_UP"
-    && suppliedEffectKey === configuredEffectKey
+    && suppliedEffectKey === exactBinding
     && sequenceStep === "FOLLOW-UP-1";
 }
 
@@ -421,7 +426,18 @@ async function processSelfCanarySend(sql: any, args: any, runtimeMode: string, s
 }
 
 export default async (req: Request) => {
-  if (req.method !== "POST") return json(405, { ok: false, error: "POST_ONLY", version: VERSION });
+  if (req.method !== "POST") {
+    const exactBinding = configuredFollowUpCanaryEffectKey(Netlify.env.get("OUTREACH_CANARY_EFFECT_KEY") || "");
+    return json(405, {
+      ok: false,
+      error: "POST_ONLY",
+      version: VERSION,
+      canary_effect_key_configured: Boolean(exactBinding),
+      canary_effect_key_sha256: exactBinding ? await digestHex(exactBinding) : null,
+      canary_operation: exactBinding ? "EXECUTE_FOLLOW_UP" : null,
+      canary_sequence_step: exactBinding ? "FOLLOW-UP-1" : null,
+    });
+  }
 
   const sharedSecret = Netlify.env.get("OUTREACH_RUNTIME_SHARED_SECRET") || "";
   const canarySecret = Netlify.env.get("OUTREACH_CANARY_SECRET") || "";
