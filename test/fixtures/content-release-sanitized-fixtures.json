@@ -1,0 +1,163 @@
+[
+  {
+    "recordId": "fixture-fast-001",
+    "contentId": "UAT-FAST-001",
+    "contentIdentityKey": "uat-fast-001|facebook",
+    "legacy": {
+      "contentPublishGate": "BLOCKED — V1.2 PRODUCTION OR RELEASE REQUIREMENTS INCOMPLETE",
+      "releaseRuntimeGate": "BLOCKED — IDENTITY INPUTS",
+      "releaseRuntimeStatus": "Not Released",
+      "correctionGate": "PASS — CURRENT CONTENT"
+    },
+    "reconstructed": {
+      "contentSafetyDecision": "Pass",
+      "contentTruthDecision": "Pass — Timeless / Not Applicable",
+      "qualityDecision": "PASS",
+      "authorityClass": "FAST — Weekly Delegation Eligible",
+      "authorityDecision": "AUTHORIZED — WEEKLY FAST DELEGATION",
+      "packageIntegrity": "FROZEN — CURRENT",
+      "publicationSafetyShadow": "READY",
+      "lifecycleState": "RELEASE",
+      "nextAction": "Execute the governed release once using the immutable Release Key.",
+      "actionOwner": "Content Release Engine"
+    }
+  },
+  {
+    "recordId": "fixture-controlled-001",
+    "contentId": "UAT-CONTROLLED-001",
+    "contentIdentityKey": "uat-controlled-001|facebook",
+    "legacy": {
+      "contentPublishGate": "BLOCKED — V1.2 PRODUCTION OR RELEASE REQUIREMENTS INCOMPLETE",
+      "releaseRuntimeGate": "NOT APPLICABLE",
+      "releaseRuntimeStatus": "",
+      "correctionGate": "PASS — CURRENT CONTENT"
+    },
+    "reconstructed": {
+      "contentSafetyDecision": "Pass",
+      "contentTruthDecision": "Pass — Timeless / Not Applicable",
+      "qualityDecision": "PASS",
+      "authorityClass": "CONTROLLED — Owner Approval Required",
+      "authorityDecision": "AUTHORIZED — EXPLICIT OWNER APPROVAL",
+      "packageIntegrity": "FROZEN — CURRENT",
+      "publicationSafetyShadow": "READY",
+      "lifecycleState": "RELEASE",
+      "nextAction": "Execute the governed release once using the immutable Release Key.",
+      "actionOwner": "Content Release Engine"
+    }
+  },
+  {
+    "recordId": "fixture-privacy-001",
+    "contentId": "UAT-PRIVACY-001",
+    "contentIdentityKey": "uat-privacy-001|facebook",
+    "legacy": {
+      "contentPublishGate": "BLOCKED — V1.2 PRODUCTION OR RELEASE REQUIREMENTS INCOMPLETE",
+      "releaseRuntimeGate": "NOT APPLICABLE",
+      "releaseRuntimeStatus": "",
+      "correctionGate": "PASS — CURRENT CONTENT"
+    },
+    "reconstructed": {
+      "contentSafetyDecision": "Blocked — Privacy",
+      "contentTruthDecision": "Pass — Timeless / Not Applicable",
+      "qualityDecision": "PASS",
+      "authorityClass": "FAST — Weekly Delegation Eligible",
+      "authorityDecision": "AUTHORIZED — WEEKLY FAST DELEGATION",
+      "packageIntegrity": "BLOCKED — SPECIFICATION MISSING",
+      "publicationSafetyShadow": "BLOCKED — UNSAFE CONTENT",
+      "lifecycleState": "QUALITY",
+      "nextAction": "Repair or resolve the privacy, rights or content-safety finding.",
+      "actionOwner": "Quality & Content Safety"
+    }
+  },
+  {
+    "recordId": "fixture-rights-001",
+    "contentId": "UAT-RIGHTS-001",
+    "contentIdentityKey": "uat-rights-001|facebook",
+    "legacy": {
+      "contentPublishGate": "BLOCKED — V1.2 PRODUCTION OR RELEASE REQUIREMENTS INCOMPLETE",
+      "releaseRuntimeGate": "NOT APPLICABLE",
+      "releaseRuntimeStatus": "",
+      "correctionGate": "PASS — CURRENT CONTENT"
+    },
+    "reconstructed": {
+      "contentSafetyDecision": "Blocked — Rights",
+      "contentTruthDecision": "Pass — Timeless / Not Applicable",
+      "qualityDecision": "PASS",
+      "authorityClass": "FAST — Weekly Delegation Eligible",
+      "authorityDecision": "AUTHORIZED — WEEKLY FAST DELEGATION",
+      "packageIntegrity": "BLOCKED — SPECIFICATION MISSING",
+      "publicationSafetyShadow": "BLOCKED — UNSAFE CONTENT",
+      "lifecycleState": "QUALITY",
+      "nextAction": "Repair or resolve the privacy, rights or content-safety finding.",
+      "actionOwner": "Quality & Content Safety"
+    }
+  },
+  {
+    "recordId": "fixture-stale-001",
+    "contentId": "UAT-STALE-001",
+    "contentIdentityKey": "uat-stale-001|facebook",
+    "legacy": {
+      "contentPublishGate": "BLOCKED — V1.2 PRODUCTION OR RELEASE REQUIREMENTS INCOMPLETE",
+      "releaseRuntimeGate": "NOT APPLICABLE",
+      "releaseRuntimeStatus": "",
+      "correctionGate": "PASS — CURRENT CONTENT"
+    },
+    "reconstructed": {
+      "contentSafetyDecision": "Pass",
+      "contentTruthDecision": "Blocked — Stale",
+      "qualityDecision": "PASS",
+      "authorityClass": "FAST — Weekly Delegation Eligible",
+      "authorityDecision": "AUTHORIZED — WEEKLY FAST DELEGATION",
+      "packageIntegrity": "BLOCKED — SPECIFICATION MISSING",
+      "publicationSafetyShadow": "BLOCKED — UNSAFE / STALE CONTENT",
+      "lifecycleState": "QUALITY",
+      "nextAction": "Verify the current authoritative source and update the stale claim.",
+      "actionOwner": "Quality & Content Safety"
+    }
+  },
+  {
+    "recordId": "fixture-unknown-001",
+    "contentId": "UAT-UNKNOWN-001",
+    "contentIdentityKey": "uat-unknown-001|instagram",
+    "legacy": {
+      "contentPublishGate": "BLOCKED — V1.2 PRODUCTION OR RELEASE REQUIREMENTS INCOMPLETE",
+      "releaseRuntimeGate": "NOT APPLICABLE",
+      "releaseRuntimeStatus": "",
+      "correctionGate": "PASS — CURRENT CONTENT"
+    },
+    "reconstructed": {
+      "contentSafetyDecision": "",
+      "contentTruthDecision": "",
+      "qualityDecision": "NOT CHECKED",
+      "authorityClass": "CONTROLLED — Owner Approval Required",
+      "authorityDecision": "BLOCKED — OWNER APPROVAL REQUIRED",
+      "packageIntegrity": "BLOCKED — SPECIFICATION MISSING",
+      "publicationSafetyShadow": "HOLD — OUTCOME UNKNOWN",
+      "lifecycleState": "RECONCILE",
+      "nextAction": "Reconcile the existing Scheduler Post ID in Planable and the native destination; do not create or retry.",
+      "actionOwner": "Publication Reconciliation"
+    }
+  },
+  {
+    "recordId": "fixture-in-progress-001",
+    "contentId": "UAT-IN-PROGRESS-001",
+    "contentIdentityKey": "uat-in-progress-001|facebook",
+    "legacy": {
+      "contentPublishGate": "BLOCKED — V1.2 PRODUCTION OR RELEASE REQUIREMENTS INCOMPLETE",
+      "releaseRuntimeGate": "PASS — CONNECTOR EFFECT VERIFIED / UNPUBLISHED",
+      "releaseRuntimeStatus": "In Progress",
+      "correctionGate": "PASS — CURRENT CONTENT"
+    },
+    "reconstructed": {
+      "contentSafetyDecision": "",
+      "contentTruthDecision": "",
+      "qualityDecision": "NOT CHECKED",
+      "authorityClass": "Not Applicable",
+      "authorityDecision": "NOT APPLICABLE",
+      "packageIntegrity": "BLOCKED — SPECIFICATION MISSING",
+      "publicationSafetyShadow": "QA / TEST — OBSERVATION ONLY",
+      "lifecycleState": "RELEASE",
+      "nextAction": "Wait for the current release effect and reconcile it; do not retry.",
+      "actionOwner": "Content Release Engine"
+    }
+  }
+]
