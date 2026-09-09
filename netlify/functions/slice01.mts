@@ -1,10 +1,15 @@
 import { neon, Pool } from "@neondatabase/serverless";
-import { GmailOutreachV2Adapter, FailClosedError } from "../../outreach-provider-adapter/src/adapter.js";
+import {
+  GmailOutreachV2Adapter,
+  FailClosedError,
+  GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY,
+  ZERO_PROVIDER_RECOVERY_KIND
+} from "../../outreach-provider-adapter/src/adapter.js";
 import { AirtableOutreachGates, AirtableReadOnlyClient, JEF_AIRTABLE } from "../../outreach-provider-adapter/src/airtable-gates.js";
 import { GmailApiProvider } from "../../outreach-provider-adapter/src/gmail-provider.js";
 import { PostgresClaimStore } from "../../outreach-provider-adapter/src/postgres-claim-store.js";
 
-const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.7-event-ledger-bigint-default";
+const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.8-zero-provider-recovery-once";
 const EFFECT_PREFIX = "OUTREACH-SEND";
 const REQUIRED_GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
@@ -74,6 +79,32 @@ export function hasExactFollowUpCanaryAuthority({
   return operation === "EXECUTE_FOLLOW_UP"
     && suppliedEffectKey === exactBinding
     && sequenceStep === "FOLLOW-UP-1";
+}
+
+export function hasExactZeroProviderRecoveryAuthority({
+  boundedCanaryAuthorized,
+  requestedRecoveryKind,
+  suppliedEffectKey,
+  configuredEffectKey,
+  sequenceStep,
+  runtimeMode,
+  sendEnabled,
+}: {
+  boundedCanaryAuthorized: unknown;
+  requestedRecoveryKind: unknown;
+  suppliedEffectKey: unknown;
+  configuredEffectKey: unknown;
+  sequenceStep: unknown;
+  runtimeMode: unknown;
+  sendEnabled: unknown;
+}) {
+  return boundedCanaryAuthorized === true
+    && requestedRecoveryKind === ZERO_PROVIDER_RECOVERY_KIND
+    && suppliedEffectKey === configuredEffectKey
+    && suppliedEffectKey === GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY
+    && sequenceStep === "FOLLOW-UP-1"
+    && runtimeMode === "zero-send"
+    && sendEnabled === false;
 }
 
 function normalizeRfcMessageId(value: string) {
@@ -307,7 +338,7 @@ function canonicalGmailTransport(authorizedSenderIdentity: string) {
   };
 }
 
-async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtimeMode: string, sendEnabled: boolean, boundedCanaryAuthorized: boolean) {
+async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtimeMode: string, sendEnabled: boolean, boundedCanaryAuthorized: boolean, recoveryAuthority?: { kind: string; effectKey: string }) {
   const productionTransmissionAuthorized = runtimeMode === "production" && sendEnabled;
   if (!productionTransmissionAuthorized && !boundedCanaryAuthorized) {
     return json(409, { ok: false, error: "PRODUCTION_TRANSMISSION_DISABLED", provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
@@ -337,7 +368,7 @@ async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtim
       gmailProvider: new GmailApiProvider({ transport: gmail.transport, from: gmail.sender }),
       controls: { adapterBuildEnabled: true },
     });
-    const result = await adapter.execute({ payload, effectKey: args.effect_key, claimantId: args.claimant_id, claimToken: args.claim_token });
+    const result = await adapter.execute({ payload, effectKey: args.effect_key, claimantId: args.claimant_id, claimToken: args.claim_token, recoveryAuthority });
     return json(200, { ok: true, ...result, provider_send_called: result.result === "CONFIRMED", provider_call_count: result.result === "CONFIRMED" || result.result === "UNKNOWN_HOLD" ? 1 : 0, automatic_retry: false, version: VERSION });
   } finally {
     await pool.end();
@@ -428,6 +459,7 @@ async function processSelfCanarySend(sql: any, args: any, runtimeMode: string, s
 export default async (req: Request) => {
   if (req.method !== "POST") {
     const exactBinding = configuredFollowUpCanaryEffectKey(Netlify.env.get("OUTREACH_CANARY_EFFECT_KEY") || "");
+    const recoveryBound = exactBinding === GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY;
     return json(405, {
       ok: false,
       error: "POST_ONLY",
@@ -436,6 +468,7 @@ export default async (req: Request) => {
       canary_effect_key_sha256: exactBinding ? await digestHex(exactBinding) : null,
       canary_operation: exactBinding ? "EXECUTE_FOLLOW_UP" : null,
       canary_sequence_step: exactBinding ? "FOLLOW-UP-1" : null,
+      zero_provider_recovery_kind: recoveryBound ? ZERO_PROVIDER_RECOVERY_KIND : null,
     });
   }
 
@@ -475,7 +508,21 @@ export default async (req: Request) => {
         runtimeMode,
         sendEnabled,
       });
-      return await executeCanonicalFirstTouch(args, databaseUrl, runtimeMode, sendEnabled, boundedCanaryAuthorized);
+      const recoveryKindProvided = Object.prototype.hasOwnProperty.call(args, "recovery_kind");
+      const recoveryAuthorized = hasExactZeroProviderRecoveryAuthority({
+        boundedCanaryAuthorized,
+        requestedRecoveryKind: args.recovery_kind,
+        suppliedEffectKey: args.effect_key,
+        configuredEffectKey: configuredCanaryEffectKey,
+        sequenceStep: args.payload?.sequenceStep,
+        runtimeMode,
+        sendEnabled,
+      });
+      if (recoveryKindProvided && !recoveryAuthorized) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
+      const recoveryAuthority = recoveryAuthorized
+        ? Object.freeze({ kind: ZERO_PROVIDER_RECOVERY_KIND, effectKey: String(args.effect_key) })
+        : undefined;
+      return await executeCanonicalFirstTouch(args, databaseUrl, runtimeMode, sendEnabled, boundedCanaryAuthorized, recoveryAuthority);
     } catch (error: any) {
       const status = error instanceof FailClosedError ? 409 : 502;
       return json(status, { ok: false, error: String(error?.message || "OUTREACH_EXECUTION_FAILED"), provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });

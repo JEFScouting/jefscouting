@@ -9,6 +9,22 @@ const oneShotDiagnosticSource = await readFile(new URL("../netlify/functions/out
 const netlifyConfigSource = await readFile(new URL("../netlify.toml", import.meta.url), "utf8");
 const motekEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-001|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
 const otherEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-OTHER|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
+const recoveryKind = "CLOSED_NO_PROVIDER_EFFECT_ONCE";
+const hughFailedEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-002|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
+const contaminatedEffectKeys = Object.freeze([
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-20260810-CHATEAU-ZZS|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-V14-20260808-MIA-B1-031|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-DAILY-20260806-100|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-20260810-DELILAH-MIAMI|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-V163-20260821-HOTELS-FLL-B1-CORAL-KEY|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-V163-20260822-HOTELS-BROWARD-TRU-POMPANO|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-V14-20260808-MIA-B1-021|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-V163-20260821-HOTELS-FLL-B1-BREAKAWAY|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-V14-20260808-MIA-B1-051|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-V163-20260821-HOTELS-FLL-B1-BLUE-STRAWBERRY|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-V163-20260822-HOTELS-BROWARD-HIX-DANIA|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
+  "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-V14-20260808-MIA-B1-039|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1"
+]);
 const motekEffectKeySha256 = createHash("sha256").update(motekEffectKey,"utf8").digest("hex");
 
 function runtimeEnv(overrides={}) {
@@ -83,7 +99,7 @@ test("exact deployed handler path rejects First-Touch in zero-send before any ex
 });
 
 test("one-EffectKey canary authority is exact, Follow-Up-only, and zero-send-only", async () => {
-  const {hasExactFollowUpCanaryAuthority}=await import(new URL(`../.runtime-build/slice01.mjs?authority=${Date.now()}`,import.meta.url));
+  const {hasExactFollowUpCanaryAuthority,hasExactZeroProviderRecoveryAuthority}=await import(new URL(`../.runtime-build/slice01.mjs?authority=${Date.now()}`,import.meta.url));
   const exact={configuredEffectKey:motekEffectKey,operation:"EXECUTE_FOLLOW_UP",suppliedEffectKey:motekEffectKey,sequenceStep:"FOLLOW-UP-1",runtimeMode:"zero-send",sendEnabled:false};
   assert.equal(hasExactFollowUpCanaryAuthority(exact),true);
   for (const changed of [
@@ -96,6 +112,26 @@ test("one-EffectKey canary authority is exact, Follow-Up-only, and zero-send-onl
     {...exact,runtimeMode:"production",sendEnabled:false},
     {...exact,runtimeMode:"zero-send",sendEnabled:true},
   ]) assert.equal(hasExactFollowUpCanaryAuthority(changed),false);
+
+  const recovery={boundedCanaryAuthorized:true,requestedRecoveryKind:recoveryKind,suppliedEffectKey:motekEffectKey,configuredEffectKey:motekEffectKey,sequenceStep:"FOLLOW-UP-1",runtimeMode:"zero-send",sendEnabled:false};
+  assert.equal(hasExactZeroProviderRecoveryAuthority(recovery),true);
+  for (const changed of [
+    {...recovery,boundedCanaryAuthorized:false},
+    {...recovery,requestedRecoveryKind:undefined},
+    {...recovery,requestedRecoveryKind:"CLOSED_NO_PROVIDER_EFFECT"},
+    {...recovery,suppliedEffectKey:otherEffectKey},
+    {...recovery,configuredEffectKey:otherEffectKey},
+    {...recovery,sequenceStep:"FIRST-TOUCH"},
+    {...recovery,runtimeMode:"production",sendEnabled:true},
+    {...recovery,sendEnabled:true},
+  ]) assert.equal(hasExactZeroProviderRecoveryAuthority(changed),false);
+  for (const blockedEffectKey of [...contaminatedEffectKeys,hughFailedEffectKey]) {
+    assert.equal(hasExactZeroProviderRecoveryAuthority({
+      ...recovery,
+      suppliedEffectKey:blockedEffectKey,
+      configuredEffectKey:blockedEffectKey
+    }),false);
+  }
 });
 
 test("production config carries one exact non-secret binding and live identity exposes only its digest", async () => {
@@ -113,6 +149,7 @@ test("production config carries one exact non-secret binding and live identity e
     assert.equal(body.canary_effect_key_sha256,motekEffectKeySha256);
     assert.equal(body.canary_operation,"EXECUTE_FOLLOW_UP");
     assert.equal(body.canary_sequence_step,"FOLLOW-UP-1");
+    assert.equal(body.zero_provider_recovery_kind,recoveryKind);
     assert.equal(JSON.stringify(body).includes(motekEffectKey),false);
   } finally { globalThis.fetch=originalFetch; delete globalThis.Netlify; }
 });
@@ -134,6 +171,13 @@ test("non-exact canary requests and direct SEND_PROVIDER stay blocked with zero 
       assert.equal(body.provider_call_count,0);
     }
     env=runtimeEnv({OUTREACH_CANARY_EFFECT_KEY:motekEffectKey});
+    for (const invalidRecoveryKind of ["", "CLOSED_NO_PROVIDER_EFFECT", [recoveryKind]]) {
+      const recovery=await handler(runtimeRequest({op:"EXECUTE_FOLLOW_UP",effect_key:motekEffectKey,recovery_kind:invalidRecoveryKind,payload:motekPayload}));
+      const recoveryBody=await recovery.json();
+      assert.equal(recovery.status,409);
+      assert.equal(recoveryBody.error,"ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
+      assert.equal(recoveryBody.provider_call_count,0);
+    }
     const firstTouch=await handler(runtimeRequest({op:"EXECUTE_FIRST_TOUCH",effect_key:motekEffectKey,payload:{...motekPayload,sequenceStep:"FIRST-TOUCH"}}));
     assert.equal(firstTouch.status,409);
     assert.equal((await firstTouch.json()).error,"PRODUCTION_TRANSMISSION_DISABLED");
@@ -171,7 +215,7 @@ test("exact Motek binding reaches fresh exact-thread preflight but never a provi
   };
   try {
     const {default:handler}=await import(new URL(`../.runtime-build/slice01.mjs?preflight=${Date.now()}`,import.meta.url));
-    const response=await handler(runtimeRequest({op:"EXECUTE_FOLLOW_UP",effect_key:motekEffectKey,claimant_id:"test",claim_token:"11111111-1111-4111-8111-111111111111",payload:motekPayload}));
+    const response=await handler(runtimeRequest({op:"EXECUTE_FOLLOW_UP",effect_key:motekEffectKey,recovery_kind:recoveryKind,claimant_id:"test",claim_token:"11111111-1111-4111-8111-111111111111",payload:motekPayload}));
     const body=await response.json();
     assert.equal(response.status,409);
     assert.equal(body.error,"AIRTABLE_READ_FAILED_500");
@@ -210,11 +254,13 @@ test("one-shot Airtable diagnostic runner is internal, zero-send, and mutation-f
 });
 
 test("runtime binds Follow-Up Gmail thread and fresh mailbox reality before adapter execution", () => {
-  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.7-event-ledger-bigint-default/);
+  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.8-zero-provider-recovery-once/);
   assert.match(source, /JSON\.stringify\(threadId \? \{ raw, threadId \} : \{ raw \}\)/);
   assert.match(source, /async function freshMailboxReality\(payload: any\)/);
   assert.match(source, /message\.labelIds\.includes\("SENT"\)/);
   assert.match(source, /canonicalGmailTransport\(payload\.senderIdentitySnapshot\)/);
   assert.match(source, /result: "NO_OP_STALE_MAILBOX"/);
   assert.match(source, /op === "EXECUTE_FIRST_TOUCH" \|\| op === "EXECUTE_FOLLOW_UP"/);
+  assert.match(source, /ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID/);
+  assert.match(source, /ZERO_PROVIDER_RECOVERY_KIND/);
 });

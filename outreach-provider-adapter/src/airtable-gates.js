@@ -1,4 +1,9 @@
-import { FailClosedError, canonicalPayloadFingerprint } from "./adapter.js";
+import {
+  FailClosedError,
+  ZERO_PROVIDER_RECOVERY_KIND,
+  canonicalPayloadFingerprint,
+  isZeroProviderRecoveryAuthority
+} from "./adapter.js";
 
 export const JEF_AIRTABLE = Object.freeze({
   baseId: "appveHEw1HrXr8nD1",
@@ -13,7 +18,7 @@ export const JEF_AIRTABLE = Object.freeze({
     command: Object.freeze({ id:"fldKxEQsTN94OmHdJ", state:"fldOnCmzw1mkSqCaK", approval:"fldNC296H0MkDBwd0", gate:"fldFOFnufX3Wk34HN", integrity:"fldkFkfVIFlurpB5u", health:"fldyzzZG9LaGeWt64", campaigns:"fldkpBKa6gjLOsIzQ" }),
     campaign: Object.freeze({ id:"fldzPi1HVA0AoOjD9", status:"fldh6Qy8jjs0q6O6K", runtime:"fldQ5sTHfdEisNpwn", circuit:"fldHhm4H0rSaXgiJk", runtimeGate:"fldFLWvsTmpmAyv4z", engineVersion:"fldFMGC3CVDbvHxQD", commands:"fldPVT2Wr7IFAviuQ" }),
     lead: Object.freeze({ id:"fldlDDtYe3AcX0QJO", recipient:"fldpRmzGTsF3gg3eB", dnc:"fldRbrGaDHNSICYdL", suppressionRecords:"fld1KPjcQmm1WSNHo", suppressionStatus:"fldb69wNMIukC5mix", emailStatus:"fldU2mjJAQ5SwzHT7", admission:"fldugOmymGBeJsRD5", admissionEvidence:"fldfKCGHJ9MqHmbly", admissionGate:"fldpidZBwOWjgDI4Q", followUpAdmission:"fldfcMMjFqfVGgyy5", followUpGate:"fldsmTEwa9WFsfhIb", responsePriority:"fld1Xn60Ml8g5sNcL", nextAction:"fldvbSUuEQ6DxcWyD", campaigns:"fldgbyNKk5prGiGaT" }),
-    activity: Object.freeze({ lead:"fldBiZlNMKXE8sa0e", campaign:"fldTDKd5fl2DNmqDg", campaignId:"fldA95EJVk3Hk2Fla", state:"fldN6MwXRlcBaAlUT", recipient:"fld4JG1YJRy7QlcIu", prior:"fldKr1GLupKyRWjYd", suppression:"fldls1Vw4TIAmpZc4", contractGate:"fldRZKftkZDWUZQp6", payloadGate:"fldKXJ1Ag2GRbBzBS", effectKey:"fld8GwqyOUXvsMjNx", sequenceInstance:"fld9jL4f8xVnw6K11", sequenceVersion:"fld4FVFnKCmJ0UlEq", subject:"fldfJ3HO1dn02atAE", body:"fldKGtIalqPOILCRY", templateVersion:"fldQwXKI36a6a7k1v", sender:"fldAHahCW8zGUzAlT" }),
+    activity: Object.freeze({ lead:"fldBiZlNMKXE8sa0e", campaign:"fldTDKd5fl2DNmqDg", campaignId:"fldA95EJVk3Hk2Fla", state:"fldN6MwXRlcBaAlUT", recipient:"fld4JG1YJRy7QlcIu", prior:"fldKr1GLupKyRWjYd", suppression:"fldls1Vw4TIAmpZc4", contractGate:"fldRZKftkZDWUZQp6", payloadGate:"fldKXJ1Ag2GRbBzBS", effectKey:"fld8GwqyOUXvsMjNx", sequenceInstance:"fld9jL4f8xVnw6K11", sequenceVersion:"fld4FVFnKCmJ0UlEq", subject:"fldfJ3HO1dn02atAE", body:"fldKGtIalqPOILCRY", templateVersion:"fldQwXKI36a6a7k1v", sender:"fldAHahCW8zGUzAlT", runtimeStatus:"flddDapD8SJPciVjX", attemptCount:"fldY1CK7ICUi0bJAo", reconciledAt:"fldhKjHXBssXKNO4D", providerMessageId:"fld15JwDA9OK5m6VR", providerGate:"fldqXrtwIG5iv0Ebl", reconciliationResult:"fldUCsV3KRSMS5yvx", claimToken:"fldhb6AjhgQyfSPg9", claimedAt:"fld2OwrfPVVjHkV6l", claimant:"fldKbvF3LeIfRtIgi", claimGate:"fldhpVipuiPI2rEPP" }),
     suppression: Object.freeze({ status:"fldzChBn4GTkedQn4", integrity:"fld0FeJhqwornwuaA" })
   })
 });
@@ -67,8 +72,14 @@ export class AirtableOutreachGates {
     return {activity,lead,campaign,command};
   }
 
-  evaluate({ payload, effectKey, snapshot }) {
+  evaluate({ payload, effectKey, claimToken, claimantId, recoveryAuthority, snapshot }) {
     const F=JEF_AIRTABLE.fields, a=snapshot.activity.fields, l=snapshot.lead.fields, c=snapshot.campaign.fields, cmd=snapshot.command.fields;
+    if (recoveryAuthority !== undefined && !isZeroProviderRecoveryAuthority(recoveryAuthority, {
+      effectKey,
+      sequenceStep: payload.sequenceStep,
+      runtimeMode: payload.runtimeMode
+    })) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
+    const recoveryRequested = recoveryAuthority !== undefined;
     const controls={adapterBuildEnabled:true,campaign:scalar(c[F.campaign.status])==="Running"?"ACTIVE":"HOLD",runtime:scalar(c[F.campaign.runtime])==="Running"?"ACTIVE":"HOLD",circuit:scalar(c[F.campaign.circuit])==="Healthy"?"ACTIVE":"HOLD"};
     const leadAdmission = payload.sequenceStep === "FIRST-TOUCH" ? [
       scalar(l[F.lead.admission])==="READY",
@@ -81,11 +92,28 @@ export class AirtableOutreachGates {
       scalar(l[F.lead.responsePriority])==="P4 — DUE FOLLOW-UP",
       scalar(l[F.lead.nextAction])==="FOLLOW_UP"
     ] : [false];
+    const effectStateAuthority = recoveryRequested ? [
+      scalar(a[F.activity.state])==="RECONCILED",
+      scalar(a[F.activity.contractGate])==="NO-OP — EFFECT EXISTS",
+      scalar(a[F.activity.runtimeStatus])==="Reconciled",
+      Number(a[F.activity.attemptCount])===0,
+      Boolean(a[F.activity.reconciledAt]),
+      !scalar(a[F.activity.providerMessageId]),
+      scalar(a[F.activity.reconciliationResult])==="CLOSED_NO_PROVIDER_EFFECT",
+      scalar(a[F.activity.providerGate])==="NO-OP — CLOSED NO PROVIDER EFFECT",
+      scalar(a[F.activity.claimToken])===claimToken,
+      scalar(a[F.activity.claimant])===claimantId,
+      Boolean(a[F.activity.claimedAt]),
+      scalar(a[F.activity.claimGate])==="SEALED — CLAIM PRESERVED"
+    ] : [
+      scalar(a[F.activity.state])==="READY",
+      scalar(a[F.activity.contractGate])==="PASS — EFFECT READY"
+    ];
     const authority = [
       exactIds(a[F.activity.lead],payload.airtableLeadRecordId), exactIds(a[F.activity.campaign],payload.airtableCampaignRecordId),
       exactIds(l[F.lead.campaigns],payload.airtableCampaignRecordId), exactIds(c[F.campaign.commands],payload.airtableCommandRecordId),
       exactIds(cmd[F.command.campaigns],payload.airtableCampaignRecordId),
-      scalar(a[F.activity.effectKey])===effectKey, scalar(a[F.activity.state])==="READY", scalar(a[F.activity.contractGate])==="PASS — EFFECT READY",
+      scalar(a[F.activity.effectKey])===effectKey, ...effectStateAuthority,
       scalar(a[F.activity.payloadGate])==="PASS — CORE PAYLOAD FROZEN", scalar(a[F.activity.recipient])===payload.destination,
       scalar(a[F.activity.prior])==="CLEAR", scalar(a[F.activity.suppression])==="CLEAR",
       scalar(a[F.activity.sequenceInstance])===payload.sequenceInstanceKey, scalar(a[F.activity.sequenceVersion])===payload.sequenceVersionSnapshot,
@@ -98,15 +126,15 @@ export class AirtableOutreachGates {
       scalar(cmd[F.command.gate])==="Approved", scalar(cmd[F.command.integrity])==="READY", scalar(cmd[F.command.health])==="ACTIVE"
     ];
     const decision=authority.every(Boolean)&&Object.values(controls).every((v)=>v===true||v==="ACTIVE")?"AUTHORIZED":"HOLD";
-    return {decision,commandId:scalar(cmd[F.command.id])||"",releaseId:snapshot.campaign.id,authorityVersion:scalar(c[F.campaign.engineVersion])||"",effectKey,payloadFingerprint:canonicalPayloadFingerprint(payload),verifiedRecipient:scalar(a[F.activity.recipient])||"",senderIdentity:scalar(a[F.activity.sender])||"",correlationDomain:this.correlationDomain,controls};
+    return {decision,commandId:scalar(cmd[F.command.id])||"",releaseId:snapshot.campaign.id,authorityVersion:scalar(c[F.campaign.engineVersion])||"",effectKey,payloadFingerprint:canonicalPayloadFingerprint(payload),verifiedRecipient:scalar(a[F.activity.recipient])||"",senderIdentity:scalar(a[F.activity.sender])||"",correlationDomain:this.correlationDomain,controls,recoveryKind:recoveryRequested?ZERO_PROVIDER_RECOVERY_KIND:null};
   }
 
-  async readCurrent({payload,effectKey}) { return this.evaluate({payload,effectKey,snapshot:await this.readSnapshot(payload)}); }
+  async readCurrent({payload,effectKey,claimToken,claimantId,recoveryAuthority}) { return this.evaluate({payload,effectKey,claimToken,claimantId,recoveryAuthority,snapshot:await this.readSnapshot(payload)}); }
 
-  async revalidate({payload,effectKey,payloadFingerprint}) {
+  async revalidate({payload,effectKey,claimToken,claimantId,payloadFingerprint,recoveryAuthority}) {
     if (payloadFingerprint!==canonicalPayloadFingerprint(payload)) throw new FailClosedError("SAFETY_PAYLOAD_FINGERPRINT_MISMATCH");
     const snapshot=await this.readSnapshot(payload);
-    const binding=this.evaluate({payload,effectKey,snapshot});
+    const binding=this.evaluate({payload,effectKey,claimToken,claimantId,recoveryAuthority,snapshot});
     const suppressionIds=links(snapshot.lead.fields[JEF_AIRTABLE.fields.lead.suppressionRecords]);
     const suppressions=await Promise.all(suppressionIds.map((id)=>this.client.getRecord(JEF_AIRTABLE.tables.suppression,id)));
     const registryClear=suppressions.every((r)=>scalar(r.fields[JEF_AIRTABLE.fields.suppression.status])==="Lifted" && scalar(r.fields[JEF_AIRTABLE.fields.suppression.integrity])==="PASS — SUPPRESSION LIFTED WITH TRACE");

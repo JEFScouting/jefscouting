@@ -3,8 +3,10 @@ import test from "node:test";
 import {
   AmbiguousProviderResult,
   FailClosedError,
+  GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY,
   GmailOutreachV2Adapter,
   PreInvocationProviderError,
+  ZERO_PROVIDER_RECOVERY_KIND,
   canonicalPayloadFingerprint,
   gmailCorrelationIdentity
 } from "../src/adapter.js";
@@ -29,9 +31,9 @@ const canonicalBinding = Object.freeze({
 
 function harness({ claimResult = "WON", safety = true, providerResult = { confirmed: true, providerMessageId: "gmail-1" }, providerError, controls = activeControls, binding = canonicalBinding } = {}) {
   const effects = { authority: 0, claim: 0, safety: 0, reserve: 0, send: 0, lookup: 0, confirm: 0, unknown: 0, fail: 0 };
-  let record;
+  let record; let claimArgs;
   const claimStore = {
-    async claim() { effects.claim++; return { result: claimResult, record: { effect_key: effectKey, claim_token: claimToken } }; },
+    async claim(args) { effects.claim++; claimArgs=args; return { result: claimResult, record: { effect_key: args.effectKey, claim_token: args.claimToken } }; },
     async reserveProviderAttempt({ identity, payloadFingerprint }) {
       effects.reserve++;
       if (record) return { result: "EXISTS", providerInvocationCount: record.providerInvocationCount };
@@ -53,10 +55,40 @@ function harness({ claimResult = "WON", safety = true, providerResult = { confir
       async lookup() { effects.lookup++; return { confirmed: true, providerMessageId: "gmail-1" }; }
     }
   });
-  return { adapter, effects, record: () => record, claimStore };
+  return { adapter, effects, record: () => record, claimArgs: () => claimArgs, claimStore };
 }
 
 const request = { payload, effectKey, claimantId: "worker", claimToken };
+const recoveryPayload = Object.freeze({
+  ...payload,
+  campaignId:"JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY",
+  leadId:"LEAD-ANCHOR-20260819-001",
+  messageVersion:"FOLLOW-UP-ADAPTIVE-v1.0",
+  sequenceStep:"FOLLOW-UP-1",
+  sequenceInstanceKey:"OUTREACH-SEQUENCE|LEAD-ANCHOR-20260819-001|GMAIL-THREAD|1a0193666357e1f4",
+  sequenceVersionSnapshot:"FOLLOW-UP-ADAPTIVE-v1.0",
+  templateVersionSnapshot:"FOLLOW-UP-ADAPTIVE-v1.0",
+  destination:"info@motek.com",
+  verifiedRecipient:"info@motek.com",
+  gmailThreadId:"1a0193666357e1f4",
+  priorRfcMessageId:"<prior-motek@jefscouting.com>",
+  runtimeMode:"zero-send"
+});
+const recoveryAuthority = Object.freeze({kind:ZERO_PROVIDER_RECOVERY_KIND,effectKey:GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY});
+const recoveryBinding = Object.freeze({
+  ...canonicalBinding,
+  effectKey:GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY,
+  payloadFingerprint:canonicalPayloadFingerprint(recoveryPayload),
+  verifiedRecipient:recoveryPayload.destination,
+  recoveryKind:ZERO_PROVIDER_RECOVERY_KIND
+});
+const recoveryRequest = Object.freeze({
+  payload:recoveryPayload,
+  effectKey:GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY,
+  claimantId:"worker",
+  claimToken,
+  recoveryAuthority
+});
 
 test("confirmed send uses one durable claim store for ownership + provider attempt", async () => {
   const h = harness();
@@ -81,6 +113,34 @@ test("current authority controls fail before claim and produce zero execution ef
   const h = harness({ controls: {}, binding: { ...canonicalBinding, controls: { ...activeControls, campaign: "HOLD" } } });
   await assert.rejects(h.adapter.execute(request), FailClosedError);
   assert.deepEqual(h.effects, { authority: 1, claim: 0, safety: 0, reserve: 0, send: 0, lookup: 0, confirm: 0, unknown: 0, fail: 0 });
+});
+
+test("governed Motek recovery reaches only the existing claim and stops before provider when safety holds", async () => {
+  const h = harness({ binding: recoveryBinding, safety: false });
+  await assert.rejects(h.adapter.execute(recoveryRequest), /PRE_PROVIDER_SAFETY_REVALIDATION_FAILED/);
+  assert.deepEqual(h.claimArgs().recoveryAuthority, recoveryAuthority);
+  assert.equal(h.effects.claim, 1);
+  assert.equal(h.effects.reserve, 0);
+  assert.equal(h.effects.send, 0);
+});
+
+test("recovery authority is explicit, exact-Motek-only and cannot be manufactured", async () => {
+  const cases = [
+    { request:{...recoveryRequest,recoveryAuthority:undefined}, binding:recoveryBinding },
+    { request:recoveryRequest, binding:{...recoveryBinding,recoveryKind:null} },
+    { request:{...recoveryRequest,recoveryAuthority:{kind:ZERO_PROVIDER_RECOVERY_KIND,effectKey:"OUTREACH-SEND|campaign|other|v1|FOLLOW-UP-1"}}, binding:recoveryBinding },
+    { request:{...recoveryRequest,recoveryAuthority:{kind:"CLOSED_NO_PROVIDER_EFFECT",effectKey:GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY}}, binding:recoveryBinding },
+    { request:{...recoveryRequest,recoveryAuthority:{...recoveryAuthority,extra:"forbidden"}}, binding:recoveryBinding },
+    { request:{...recoveryRequest,payload:{...recoveryPayload,runtimeMode:"production"}}, binding:recoveryBinding },
+    { request:{...recoveryRequest,payload:{...recoveryPayload,sequenceStep:"FIRST-TOUCH",gmailThreadId:undefined,priorRfcMessageId:undefined}}, binding:recoveryBinding }
+  ];
+  for (const candidate of cases) {
+    const h=harness({binding:candidate.binding});
+    await assert.rejects(h.adapter.execute(candidate.request), FailClosedError);
+    assert.equal(h.effects.claim,0);
+    assert.equal(h.effects.reserve,0);
+    assert.equal(h.effects.send,0);
+  }
 });
 
 test("canonical authority cannot be manufactured by a bare boolean or mismatched effect", async () => {

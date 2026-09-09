@@ -1,3 +1,5 @@
+import { ZERO_PROVIDER_RECOVERY_KIND, isZeroProviderRecoveryAuthority } from "./adapter.js";
+
 export class PostgresClaimStore {
   constructor({ pool, tableName = "outreach_effects", eventTableName = "outreach_effect_events" }) {
     if (!pool || typeof pool.query !== "function") throw new TypeError("POSTGRES_POOL_REQUIRED");
@@ -16,10 +18,115 @@ export class PostgresClaimStore {
     );
   }
 
-  async claim({ payload, effectKey, claimantId, claimToken, payloadFingerprint }) {
+  async claim({ payload, effectKey, claimantId, claimToken, payloadFingerprint, recoveryAuthority }) {
     if (!payload || !effectKey || !claimantId || !claimToken || !payloadFingerprint) {
       throw new TypeError("CLAIM_IDENTITY_REQUIRED");
     }
+    if (recoveryAuthority !== undefined) {
+      if (!isZeroProviderRecoveryAuthority(recoveryAuthority, {
+        effectKey,
+        sequenceStep: payload.sequenceStep,
+        runtimeMode: payload.runtimeMode
+      })) throw new TypeError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
+
+      const recovered = await this.pool.query(
+        `WITH eligible AS (
+           SELECT e.effect_key
+             FROM ${this.tableName} e
+            WHERE e.effect_key = $1
+              AND e.claim_token = $2::uuid
+              AND e.claimant_id = $3
+              AND e.campaign_id = $4
+              AND e.lead_id = $5
+              AND e.destination = $6
+              AND e.message_version = $7
+              AND e.sequence_step = $8
+              AND e.runtime_mode = $9
+              AND e.provider_payload_fingerprint = $10
+              AND e.state = 'RECONCILED'
+              AND e.provider_invocation_count = 0
+              AND e.provider_correlation_id IS NULL
+              AND e.provider_rfc_message_id IS NULL
+              AND e.provider_attempt_reserved_at IS NULL
+              AND e.provider_message_id IS NULL
+              AND (
+                SELECT COUNT(*)
+                  FROM ${this.eventTableName} all_reconcile
+                 WHERE all_reconcile.effect_key = e.effect_key
+                   AND all_reconcile.operation = 'RECONCILE'
+              ) = 1
+              AND EXISTS (
+                SELECT 1
+                  FROM ${this.eventTableName} closed
+                 WHERE closed.effect_key = e.effect_key
+                   AND closed.operation = 'RECONCILE'
+                   AND closed.result = 'CLOSED_NO_PROVIDER_EFFECT'
+                   AND closed.provider_invocation_count = 0
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM ${this.eventTableName} provider_history
+                 WHERE provider_history.effect_key = e.effect_key
+                   AND provider_history.operation IN ('RESERVE_PROVIDER_ATTEMPT','SEND_PROVIDER')
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM ${this.eventTableName} prior_recovery
+                 WHERE prior_recovery.effect_key = e.effect_key
+                   AND prior_recovery.operation = 'CLAIM'
+                   AND prior_recovery.result = 'ZERO_PROVIDER_RECOVERY_WON'
+              )
+            FOR UPDATE OF e
+         ),
+         updated AS (
+           UPDATE ${this.tableName} e
+              SET state = 'CLAIMED', updated_at = NOW()
+             FROM eligible
+            WHERE e.effect_key = eligible.effect_key
+              AND e.state = 'RECONCILED'
+          RETURNING e.effect_key, e.claim_token::text, e.claimant_id, e.state,
+                    e.provider_invocation_count, e.provider_payload_fingerprint
+         ),
+         recovery_event AS (
+           INSERT INTO ${this.eventTableName} (
+             effect_key, operation, result, claim_token, claimant_id,
+             provider_invocation_count, metadata, occurred_at
+           )
+           SELECT effect_key, 'CLAIM', 'ZERO_PROVIDER_RECOVERY_WON',
+                  claim_token::uuid, claimant_id, 0,
+                  jsonb_build_object(
+                    'recovery_kind', $11::text,
+                    'terminal_result', 'CLOSED_NO_PROVIDER_EFFECT',
+                    'same_claim_preserved', true
+                  ),
+                  NOW()
+             FROM updated
+          RETURNING event_id
+         )
+         SELECT updated.*, recovery_event.event_id::text AS recovery_event_id
+           FROM updated CROSS JOIN recovery_event`,
+        [
+          effectKey, claimToken, claimantId, payload.campaignId, payload.leadId,
+          payload.destination, payload.messageVersion, payload.sequenceStep,
+          payload.runtimeMode, payloadFingerprint, ZERO_PROVIDER_RECOVERY_KIND
+        ]
+      );
+      if (recovered.rowCount === 1) {
+        return {
+          result: "WON",
+          recovery: ZERO_PROVIDER_RECOVERY_KIND,
+          record: recovered.rows[0]
+        };
+      }
+      const current = await this.pool.query(
+        `SELECT effect_key, claim_token::text, claimant_id, state,
+                provider_invocation_count, provider_payload_fingerprint
+           FROM ${this.tableName} WHERE effect_key=$1`,
+        [effectKey]
+      );
+      return { result: "EXISTS_HOLD", record: current.rows[0] ?? null };
+    }
+
     const claimed = await this.pool.query(
       `INSERT INTO ${this.tableName} (
          effect_key, claim_token, claimant_id, claimed_at, campaign_id, lead_id,

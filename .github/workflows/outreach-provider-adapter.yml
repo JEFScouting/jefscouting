@@ -77,12 +77,12 @@ jobs:
     name: Live runtime identity (read-only)
     runs-on: ubuntu-latest
     steps:
-      - name: Verify current pre-deploy v1.1.6 identity without authentication or send authority
+      - name: Verify current pre-deploy v1.1.7 identity without authentication or send authority
         shell: bash
         run: |
           set -euo pipefail
           base='https://jef-outreach-next-runtime.netlify.app'
-          expected_version='JEF-OUTREACH-RUNTIME-v1.1.6-one-effectkey-canary-boundary'
+          expected_version='JEF-OUTREACH-RUNTIME-v1.1.7-event-ledger-bigint-default'
           body_file="${RUNNER_TEMP}/outreach-live-identity.json"
 
           probe_get() {

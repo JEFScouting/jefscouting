@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 export class FailClosedError extends Error {}
 export class PreInvocationProviderError extends Error {}
 export class AmbiguousProviderResult extends Error {}
+export const ZERO_PROVIDER_RECOVERY_KIND = "CLOSED_NO_PROVIDER_EFFECT_ONCE";
+export const GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-001|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
 
 const REQUIRED_PAYLOAD_FIELDS = [
   "campaignId", "leadId", "messageVersion", "sequenceStep", "destination", "subject", "textBody",
@@ -12,6 +14,16 @@ const REQUIRED_PAYLOAD_FIELDS = [
 ];
 
 function nonEmpty(value) { return typeof value === "string" && value.trim() !== ""; }
+
+export function isZeroProviderRecoveryAuthority(authority, { effectKey, sequenceStep, runtimeMode }) {
+  if (!authority || typeof authority !== "object" || Array.isArray(authority)) return false;
+  if (Object.keys(authority).sort().join("|") !== "effectKey|kind") return false;
+  return authority.kind === ZERO_PROVIDER_RECOVERY_KIND
+    && authority.effectKey === effectKey
+    && effectKey === GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY
+    && sequenceStep === "FOLLOW-UP-1"
+    && runtimeMode === "zero-send";
+}
 
 function requireCanonicalPayload(payload, effectKey) {
   if (!payload || payload.contractVersion !== "outreach-v2" || payload.suppressionCleared !== true) throw new FailClosedError("CANONICAL_SUPPRESSION_CLEARED_V2_PAYLOAD_REQUIRED");
@@ -39,7 +51,7 @@ function requireSafeControls(controls) {
   if (!controls?.adapterBuildEnabled || controls.campaign !== "ACTIVE" || controls.runtime !== "ACTIVE" || controls.circuit !== "ACTIVE") throw new FailClosedError("PRODUCTION_CONTROLS_NO_GO");
 }
 
-function requireCanonicalExecutionBinding(binding, { payload, effectKey }) {
+function requireCanonicalExecutionBinding(binding, { payload, effectKey, recoveryAuthority }) {
   if (!binding || binding.decision !== "AUTHORIZED") throw new FailClosedError("CANONICAL_EXECUTION_AUTHORITY_REQUIRED");
   if (!nonEmpty(binding.commandId) || !nonEmpty(binding.releaseId) || !nonEmpty(binding.authorityVersion)) throw new FailClosedError("CANONICAL_AUTHORITY_IDENTITY_INCOMPLETE");
   if (binding.effectKey !== effectKey) throw new FailClosedError("AUTHORITY_EFFECT_KEY_MISMATCH");
@@ -47,6 +59,9 @@ function requireCanonicalExecutionBinding(binding, { payload, effectKey }) {
   if (!nonEmpty(binding.verifiedRecipient) || binding.verifiedRecipient !== payload.destination) throw new FailClosedError("AUTHORITY_RECIPIENT_MISMATCH");
   if (!nonEmpty(binding.senderIdentity) || binding.senderIdentity !== payload.senderIdentitySnapshot) throw new FailClosedError("AUTHORITY_SENDER_MISMATCH");
   if (!nonEmpty(binding.correlationDomain) || binding.correlationDomain.endsWith(".invalid") || binding.correlationDomain === "outreach.invalid") throw new FailClosedError("APPROVED_CORRELATION_DOMAIN_REQUIRED");
+  const recoveryRequested = recoveryAuthority !== undefined;
+  if (recoveryRequested && binding.recoveryKind !== ZERO_PROVIDER_RECOVERY_KIND) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_BINDING_REQUIRED");
+  if (!recoveryRequested && binding.recoveryKind) throw new FailClosedError("UNREQUESTED_RECOVERY_BINDING_FORBIDDEN");
 }
 
 export function gmailCorrelationIdentity(effectKey, correlationDomain) {
@@ -65,18 +80,23 @@ export class GmailOutreachV2Adapter {
     this.controls = controls;
   }
 
-  async execute({ payload, effectKey, claimantId, claimToken }) {
+  async execute({ payload, effectKey, claimantId, claimToken, recoveryAuthority }) {
     requireCanonicalPayload(payload, effectKey);
     if (!claimantId || !claimToken) throw new FailClosedError("CLAIM_IDENTITY_REQUIRED");
+    if (recoveryAuthority !== undefined && !isZeroProviderRecoveryAuthority(recoveryAuthority, {
+      effectKey,
+      sequenceStep: payload.sequenceStep,
+      runtimeMode: payload.runtimeMode
+    })) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
 
-    const binding = await this.executionGate.readCurrent({ payload, effectKey, claimToken });
-    requireCanonicalExecutionBinding(binding, { payload, effectKey });
+    const binding = await this.executionGate.readCurrent({ payload, effectKey, claimToken, claimantId, recoveryAuthority });
+    requireCanonicalExecutionBinding(binding, { payload, effectKey, recoveryAuthority });
     requireSafeControls({ ...this.controls, ...binding.controls });
 
-    const claim = await this.claimStore.claim({ payload, effectKey, claimantId, claimToken, payloadFingerprint: binding.payloadFingerprint });
+    const claim = await this.claimStore.claim({ payload, effectKey, claimantId, claimToken, payloadFingerprint: binding.payloadFingerprint, recoveryAuthority });
     if (claim?.result !== "WON" || claim.record?.effect_key !== effectKey || claim.record?.claim_token !== claimToken) throw new FailClosedError("VALID_SLICE01_WIN_REQUIRED");
 
-    const safety = await this.safetyGate.revalidate({ payload, effectKey, claimToken, payloadFingerprint: binding.payloadFingerprint });
+    const safety = await this.safetyGate.revalidate({ payload, effectKey, claimToken, claimantId, payloadFingerprint: binding.payloadFingerprint, recoveryAuthority });
     if (safety?.suppressionCleared !== true || safety?.responsePriorityClear !== true) throw new FailClosedError("PRE_PROVIDER_SAFETY_REVALIDATION_FAILED");
 
     const identity = gmailCorrelationIdentity(effectKey, binding.correlationDomain);
