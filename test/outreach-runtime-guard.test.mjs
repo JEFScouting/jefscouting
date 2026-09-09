@@ -210,7 +210,7 @@ test("one-shot Airtable diagnostic runner is internal, zero-send, and mutation-f
 });
 
 test("runtime binds Follow-Up Gmail thread and fresh mailbox reality before adapter execution", () => {
-  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.6-one-effectkey-canary-boundary/);
+  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.7-event-ledger-bigint-default/);
   assert.match(source, /JSON\.stringify\(threadId \? \{ raw, threadId \} : \{ raw \}\)/);
   assert.match(source, /async function freshMailboxReality\(payload: any\)/);
   assert.match(source, /message\.labelIds\.includes\("SENT"\)/);
