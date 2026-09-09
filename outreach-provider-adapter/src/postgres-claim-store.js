@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 export class PostgresClaimStore {
   constructor({ pool, tableName = "outreach_effects", eventTableName = "outreach_effect_events" }) {
     if (!pool || typeof pool.query !== "function") throw new TypeError("POSTGRES_POOL_REQUIRED");
@@ -12,9 +10,9 @@ export class PostgresClaimStore {
 
   async recordEvent({ effectKey, operation, result, claimToken, claimantId, providerInvocationCount, metadata = {} }) {
     await this.pool.query(
-      `INSERT INTO ${this.eventTableName} (event_id,effect_key,operation,result,claim_token,claimant_id,provider_invocation_count,metadata,occurred_at)
-       VALUES ($1::uuid,$2,$3,$4,$5::uuid,$6,$7,$8::jsonb,NOW())`,
-      [randomUUID(), effectKey, operation, result, claimToken, claimantId, providerInvocationCount, JSON.stringify(metadata)]
+      `INSERT INTO ${this.eventTableName} (effect_key,operation,result,claim_token,claimant_id,provider_invocation_count,metadata,occurred_at)
+       VALUES ($1,$2,$3,$4::uuid,$5,$6,$7::jsonb,NOW())`,
+      [effectKey, operation, result, claimToken, claimantId, providerInvocationCount, JSON.stringify(metadata)]
     );
   }
 
@@ -60,7 +58,7 @@ export class PostgresClaimStore {
               provider_payload_fingerprint = $3,
               provider_correlation_id = $4,
               provider_rfc_message_id = $5,
-              provider_attempt_reserved_at = NOW()
+              provider_attempt_reserved_at = NOW(), updated_at = NOW()
         WHERE effect_key = $1
           AND claim_token = $2::uuid
           AND provider_invocation_count = 0
