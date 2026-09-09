@@ -49,7 +49,7 @@ test("real Postgres same-EffectKey contention yields one reservation and one los
       [effectKey, claimToken]
     );
     await pool.query(`CREATE TABLE outreach_effect_events (
-      event_id uuid PRIMARY KEY, effect_key text REFERENCES outreach_effects(effect_key), operation text, result text,
+      event_id bigserial PRIMARY KEY, effect_key text REFERENCES outreach_effects(effect_key), operation text, result text,
       claim_token uuid, claimant_id text, provider_invocation_count integer, metadata jsonb, occurred_at timestamptz)`);
 
     const [a, b] = await Promise.all([
@@ -69,6 +69,10 @@ test("real Postgres same-EffectKey contention yields one reservation and one los
     assert.equal(readback.rows[0].provider_payload_fingerprint, payloadFingerprint);
     assert.equal(readback.rows[0].provider_correlation_id, identity.correlationId);
     assert.equal(readback.rows[0].provider_rfc_message_id, identity.rfcMessageId);
+
+    const eventIds = await pool.query("SELECT event_id FROM outreach_effect_events WHERE effect_key=$1 ORDER BY event_id", [effectKey]);
+    assert.ok(eventIds.rowCount >= 2);
+    assert.ok(eventIds.rows.every((row) => Number.isSafeInteger(Number(row.event_id)) && Number(row.event_id) > 0));
 
     const replay = await store.reserveProviderAttempt({ effectKey, claimToken, identity, payloadFingerprint });
     assert.equal(replay.result, "EXISTS_HOLD");
@@ -93,7 +97,7 @@ test("real Postgres atomic claim yields exactly one winner and replay HOLD", { s
       provider_payload_fingerprint text, provider_correlation_id text, provider_rfc_message_id text,
       provider_attempt_reserved_at timestamptz, provider_message_id text, last_error text, updated_at timestamptz)`);
     await pool.query(`CREATE TABLE outreach_effect_events (
-      event_id uuid PRIMARY KEY, effect_key text REFERENCES outreach_effects(effect_key), operation text, result text,
+      event_id bigserial PRIMARY KEY, effect_key text REFERENCES outreach_effects(effect_key), operation text, result text,
       claim_token uuid, claimant_id text, provider_invocation_count integer, metadata jsonb, occurred_at timestamptz)`);
     const [a,b] = await Promise.all([
       store.claim({ payload, effectKey, claimantId:"worker-a", claimToken:"11111111-1111-4111-8111-111111111111", payloadFingerprint:"a".repeat(64) }),
@@ -104,8 +108,9 @@ test("real Postgres atomic claim yields exactly one winner and replay HOLD", { s
     assert.equal(replay.result,"EXISTS_HOLD");
     const readback=await pool.query("SELECT count(*)::int AS n FROM outreach_effects WHERE effect_key=$1",[effectKey]);
     assert.equal(readback.rows[0].n,1);
-    const events=await pool.query("SELECT result FROM outreach_effect_events WHERE effect_key=$1 ORDER BY occurred_at",[effectKey]);
+    const events=await pool.query("SELECT event_id, result FROM outreach_effect_events WHERE effect_key=$1 ORDER BY event_id",[effectKey]);
     assert.equal(events.rowCount,3);
+    assert.ok(events.rows.every((row) => Number.isSafeInteger(Number(row.event_id)) && Number(row.event_id) > 0));
     assert.equal(events.rows.filter((row)=>row.result==="WON").length,1);
     assert.equal(events.rows.filter((row)=>row.result==="EXISTS_HOLD").length,2);
   } finally { await pool.end(); }
