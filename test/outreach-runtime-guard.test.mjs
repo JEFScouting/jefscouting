@@ -5,6 +5,31 @@ import { readFile } from "node:fs/promises";
 const source = await readFile(new URL("../netlify/functions/slice01.mts", import.meta.url), "utf8");
 const diagnosticSource = await readFile(new URL("../netlify/functions/outreach-airtable-gate-diagnostic.mts", import.meta.url), "utf8");
 const oneShotDiagnosticSource = await readFile(new URL("../netlify/functions/outreach-airtable-gate-diagnostic-once.mts", import.meta.url), "utf8");
+const motekEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-001|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
+const otherEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-OTHER|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
+
+function runtimeEnv(overrides={}) {
+  return {
+    DATABASE_URL:"postgresql://user:pass@example.invalid/db",
+    OUTREACH_RUNTIME_MODE:"zero-send",
+    OUTREACH_SEND_ENABLED:"false",
+    OUTREACH_RUNTIME_SHARED_SECRET:"test-secret",
+    ...overrides,
+  };
+}
+
+function runtimeRequest(body) {
+  return new Request("https://runtime.invalid/slice01",{method:"POST",headers:{"content-type":"application/json","x-outreach-runtime-secret":"test-secret"},body:JSON.stringify(body)});
+}
+
+const motekPayload = Object.freeze({
+  contractVersion:"outreach-v2",suppressionCleared:true,campaignId:"JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY",leadId:"LEAD-ANCHOR-20260819-001",
+  messageVersion:"FOLLOW-UP-ADAPTIVE-v1.0",sequenceStep:"FOLLOW-UP-1",destination:"info@motek.com",subject:"Following up - hospitality support for Motek / Happy Corner Hospitality",textBody:"Frozen body",
+  sequenceInstanceKey:"OUTREACH-SEQUENCE|LEAD-ANCHOR-20260819-001|GMAIL-THREAD|1a0193666357e1f4",sequenceVersionSnapshot:"FOLLOW-UP-ADAPTIVE-v1.0",templateVersionSnapshot:"FOLLOW-UP-ADAPTIVE-v1.0",
+  senderIdentitySnapshot:"JEF Scouting <jefscouting@gmail.com>",verifiedRecipient:"info@motek.com",finalSubjectSnapshot:"Following up - hospitality support for Motek / Happy Corner Hospitality",finalBodySnapshot:"Frozen body",priorContactSnapshot:"CLEAR",
+  airtableActivityRecordId:"recsTFnxSZPkWrHFa",airtableLeadRecordId:"rec8xWqvtmWw5U0Rz",airtableCampaignRecordId:"reclIlbWpaTcMrc18",airtableCommandRecordId:"recpYdDfwJjrpUwyX",
+  gmailThreadId:"1a0193666357e1f4",priorRfcMessageId:"<CAO+js0xOLCzRRKH=+EYqpTXrC5YoyxqiTK7=Lp6sC+VzmouCrw@mail.gmail.com>"
+});
 
 test("production mode exists only behind the canonical First-Touch adapter", () => {
   assert.match(source, /new Set\(\["zero-send", "canary-send", "production"\]\)/);
@@ -41,7 +66,7 @@ test("exact deployed handler path rejects First-Touch in zero-send before any ex
   const originalFetch=globalThis.fetch;
   let externalCalls=0;
   globalThis.fetch=async()=>{externalCalls++; throw new Error("EXTERNAL_CALL_FORBIDDEN");};
-  globalThis.Netlify={env:{get(key){return ({DATABASE_URL:"postgresql://user:pass@example.invalid/db",OUTREACH_RUNTIME_MODE:"zero-send",OUTREACH_SEND_ENABLED:"false",OUTREACH_RUNTIME_SHARED_SECRET:"test-secret"})[key] || "";}}};
+  globalThis.Netlify={env:{get(key){return runtimeEnv()[key] || "";}}};
   try {
     const {default:handler}=await import(new URL(`../.runtime-build/slice01.mjs?test=${Date.now()}`,import.meta.url));
     const response=await handler(new Request("https://runtime.invalid/slice01",{method:"POST",headers:{"content-type":"application/json","x-outreach-runtime-secret":"test-secret"},body:JSON.stringify({op:"EXECUTE_FIRST_TOUCH"})}));
@@ -51,6 +76,87 @@ test("exact deployed handler path rejects First-Touch in zero-send before any ex
     assert.equal(body.provider_send_called,false);
     assert.equal(body.provider_call_count,0);
     assert.equal(externalCalls,0);
+  } finally { globalThis.fetch=originalFetch; delete globalThis.Netlify; }
+});
+
+test("one-EffectKey canary authority is exact, Follow-Up-only, and zero-send-only", async () => {
+  const {hasExactFollowUpCanaryAuthority}=await import(new URL(`../.runtime-build/slice01.mjs?authority=${Date.now()}`,import.meta.url));
+  const exact={configuredEffectKey:motekEffectKey,operation:"EXECUTE_FOLLOW_UP",suppliedEffectKey:motekEffectKey,sequenceStep:"FOLLOW-UP-1",runtimeMode:"zero-send",sendEnabled:false};
+  assert.equal(hasExactFollowUpCanaryAuthority(exact),true);
+  for (const changed of [
+    {...exact,suppliedEffectKey:otherEffectKey},
+    {...exact,configuredEffectKey:""},
+    {...exact,configuredEffectKey:` ${motekEffectKey}`},
+    {...exact,configuredEffectKey:`${motekEffectKey},${otherEffectKey}`},
+    {...exact,operation:"EXECUTE_FIRST_TOUCH",sequenceStep:"FIRST-TOUCH"},
+    {...exact,sequenceStep:"FIRST-TOUCH"},
+    {...exact,runtimeMode:"production",sendEnabled:false},
+    {...exact,runtimeMode:"zero-send",sendEnabled:true},
+  ]) assert.equal(hasExactFollowUpCanaryAuthority(changed),false);
+});
+
+test("non-exact canary requests and direct SEND_PROVIDER stay blocked with zero external calls", async () => {
+  const originalFetch=globalThis.fetch;
+  let externalCalls=0;
+  let env=runtimeEnv();
+  globalThis.fetch=async()=>{externalCalls++;throw new Error("EXTERNAL_CALL_FORBIDDEN");};
+  globalThis.Netlify={env:{get(key){return env[key] || "";}}};
+  try {
+    const {default:handler}=await import(new URL(`../.runtime-build/slice01.mjs?negative=${Date.now()}`,import.meta.url));
+    for (const configuredEffectKey of ["",otherEffectKey,` ${motekEffectKey}`,`${motekEffectKey},${otherEffectKey}`]) {
+      env=runtimeEnv({OUTREACH_CANARY_EFFECT_KEY:configuredEffectKey});
+      const response=await handler(runtimeRequest({op:"EXECUTE_FOLLOW_UP",effect_key:motekEffectKey,payload:motekPayload}));
+      const body=await response.json();
+      assert.equal(response.status,409);
+      assert.equal(body.error,"PRODUCTION_TRANSMISSION_DISABLED");
+      assert.equal(body.provider_call_count,0);
+    }
+    env=runtimeEnv({OUTREACH_CANARY_EFFECT_KEY:motekEffectKey});
+    const firstTouch=await handler(runtimeRequest({op:"EXECUTE_FIRST_TOUCH",effect_key:motekEffectKey,payload:{...motekPayload,sequenceStep:"FIRST-TOUCH"}}));
+    assert.equal(firstTouch.status,409);
+    assert.equal((await firstTouch.json()).error,"PRODUCTION_TRANSMISSION_DISABLED");
+    const direct=await handler(runtimeRequest({op:"SEND_PROVIDER",effect_key:motekEffectKey}));
+    const directBody=await direct.json();
+    assert.equal(direct.status,409);
+    assert.equal(directBody.error,"CANONICAL_ADAPTER_REQUIRED");
+    assert.equal(directBody.provider_call_count,0);
+    assert.equal(externalCalls,0);
+  } finally { globalThis.fetch=originalFetch; delete globalThis.Netlify; }
+});
+
+test("exact Motek binding reaches fresh exact-thread preflight but never a provider invocation", async () => {
+  const originalFetch=globalThis.fetch;
+  const urls=[];
+  let providerInvocations=0;
+  const env=runtimeEnv({
+    OUTREACH_CANARY_EFFECT_KEY:motekEffectKey,AIRTABLE_READONLY_TOKEN:"read-only",AIRTABLE_BASE_ID:"appveHEw1HrXr8nD1",
+    OUTREACH_AIRTABLE_COMMAND_RECORD_ID:"recpYdDfwJjrpUwyX",OUTREACH_AIRTABLE_CAMPAIGN_RECORD_ID:"reclIlbWpaTcMrc18",OUTREACH_CORRELATION_DOMAIN:"jefscouting.com",
+    GMAIL_OAUTH_CLIENT_ID:"client",GMAIL_OAUTH_CLIENT_SECRET:"secret",GMAIL_OAUTH_REFRESH_TOKEN:"refresh",GMAIL_SENDER_EMAIL:"jefscouting@gmail.com",
+    GMAIL_OAUTH_SCOPES:"https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly"
+  });
+  globalThis.Netlify={env:{get(key){return env[key] || "";}}};
+  globalThis.fetch=async(input,init={})=>{
+    const url=String(input);urls.push(url);
+    if (url.includes("/gmail/v1/users/me/messages/send")) {providerInvocations++;throw new Error("PROVIDER_INVOCATION_FORBIDDEN");}
+    if (url==="https://oauth2.googleapis.com/token") return Response.json({access_token:"access",scope:env.GMAIL_OAUTH_SCOPES});
+    if (url.endsWith("/gmail/v1/users/me/profile")) return Response.json({emailAddress:"jefscouting@gmail.com"});
+    if (url.includes("/gmail/v1/users/me/threads/1a0193666357e1f4")) return Response.json({messages:[
+      {id:"1a0193666357e1f4",internalDate:"1000",labelIds:["SENT"],payload:{headers:[{name:"Message-ID",value:motekPayload.priorRfcMessageId},{name:"From",value:"JEF Scouting <jefscouting@gmail.com>"},{name:"To",value:"info@motek.com"}]}},
+      {id:"draft-1",internalDate:"2000",labelIds:["DRAFT"],payload:{headers:[{name:"Message-ID",value:"<draft@example.com>"},{name:"From",value:"JEF Scouting <jefscouting@gmail.com>"},{name:"To",value:"info@motek.com"}]}}
+    ]});
+    if (url.startsWith("https://api.airtable.com/")) return Response.json({error:"intentional read-stop"},{status:500});
+    throw new Error(`UNEXPECTED_EXTERNAL_CALL:${url}:${init.method || "GET"}`);
+  };
+  try {
+    const {default:handler}=await import(new URL(`../.runtime-build/slice01.mjs?preflight=${Date.now()}`,import.meta.url));
+    const response=await handler(runtimeRequest({op:"EXECUTE_FOLLOW_UP",effect_key:motekEffectKey,claimant_id:"test",claim_token:"11111111-1111-4111-8111-111111111111",payload:motekPayload}));
+    const body=await response.json();
+    assert.equal(response.status,409);
+    assert.equal(body.error,"AIRTABLE_READ_FAILED_500");
+    assert.ok(urls.some((url)=>url.includes("/threads/1a0193666357e1f4")),"fresh exact-thread preflight must run");
+    assert.ok(urls.some((url)=>url.startsWith("https://api.airtable.com/")),"a DRAFT must not be mistaken for a sent Follow-Up");
+    assert.equal(providerInvocations,0);
+    assert.equal(body.provider_call_count,0);
   } finally { globalThis.fetch=originalFetch; delete globalThis.Netlify; }
 });
 
@@ -82,9 +188,11 @@ test("one-shot Airtable diagnostic runner is internal, zero-send, and mutation-f
 });
 
 test("runtime binds Follow-Up Gmail thread and fresh mailbox reality before adapter execution", () => {
-  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.5-threaded-followup-preflight/);
+  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.6-one-effectkey-canary-boundary/);
   assert.match(source, /JSON\.stringify\(threadId \? \{ raw, threadId \} : \{ raw \}\)/);
   assert.match(source, /async function freshMailboxReality\(payload: any\)/);
+  assert.match(source, /message\.labelIds\.includes\("SENT"\)/);
+  assert.match(source, /canonicalGmailTransport\(payload\.senderIdentitySnapshot\)/);
   assert.match(source, /result: "NO_OP_STALE_MAILBOX"/);
   assert.match(source, /op === "EXECUTE_FIRST_TOUCH" \|\| op === "EXECUTE_FOLLOW_UP"/);
 });

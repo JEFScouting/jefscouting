@@ -12,7 +12,7 @@ export const JEF_AIRTABLE = Object.freeze({
   fields: Object.freeze({
     command: Object.freeze({ id:"fldKxEQsTN94OmHdJ", state:"fldOnCmzw1mkSqCaK", approval:"fldNC296H0MkDBwd0", gate:"fldFOFnufX3Wk34HN", integrity:"fldkFkfVIFlurpB5u", health:"fldyzzZG9LaGeWt64", campaigns:"fldkpBKa6gjLOsIzQ" }),
     campaign: Object.freeze({ id:"fldzPi1HVA0AoOjD9", status:"fldh6Qy8jjs0q6O6K", runtime:"fldQ5sTHfdEisNpwn", circuit:"fldHhm4H0rSaXgiJk", runtimeGate:"fldFLWvsTmpmAyv4z", engineVersion:"fldFMGC3CVDbvHxQD", commands:"fldPVT2Wr7IFAviuQ" }),
-    lead: Object.freeze({ id:"fldlDDtYe3AcX0QJO", recipient:"fldpRmzGTsF3gg3eB", dnc:"fldRbrGaDHNSICYdL", suppressionRecords:"fld1KPjcQmm1WSNHo", suppressionStatus:"fldb69wNMIukC5mix", emailStatus:"fldU2mjJAQ5SwzHT7", admission:"fldugOmymGBeJsRD5", admissionEvidence:"fldfKCGHJ9MqHmbly", admissionGate:"fldpidZBwOWjgDI4Q", responsePriority:"fld1Xn60Ml8g5sNcL", nextAction:"fldvbSUuEQ6DxcWyD", campaigns:"fldgbyNKk5prGiGaT" }),
+    lead: Object.freeze({ id:"fldlDDtYe3AcX0QJO", recipient:"fldpRmzGTsF3gg3eB", dnc:"fldRbrGaDHNSICYdL", suppressionRecords:"fld1KPjcQmm1WSNHo", suppressionStatus:"fldb69wNMIukC5mix", emailStatus:"fldU2mjJAQ5SwzHT7", admission:"fldugOmymGBeJsRD5", admissionEvidence:"fldfKCGHJ9MqHmbly", admissionGate:"fldpidZBwOWjgDI4Q", followUpAdmission:"fldfcMMjFqfVGgyy5", followUpGate:"fldsmTEwa9WFsfhIb", responsePriority:"fld1Xn60Ml8g5sNcL", nextAction:"fldvbSUuEQ6DxcWyD", campaigns:"fldgbyNKk5prGiGaT" }),
     activity: Object.freeze({ lead:"fldBiZlNMKXE8sa0e", campaign:"fldTDKd5fl2DNmqDg", campaignId:"fldA95EJVk3Hk2Fla", state:"fldN6MwXRlcBaAlUT", recipient:"fld4JG1YJRy7QlcIu", prior:"fldKr1GLupKyRWjYd", suppression:"fldls1Vw4TIAmpZc4", contractGate:"fldRZKftkZDWUZQp6", payloadGate:"fldKXJ1Ag2GRbBzBS", effectKey:"fld8GwqyOUXvsMjNx", sequenceInstance:"fld9jL4f8xVnw6K11", sequenceVersion:"fld4FVFnKCmJ0UlEq", subject:"fldfJ3HO1dn02atAE", body:"fldKGtIalqPOILCRY", templateVersion:"fldQwXKI36a6a7k1v", sender:"fldAHahCW8zGUzAlT" }),
     suppression: Object.freeze({ status:"fldzChBn4GTkedQn4", integrity:"fld0FeJhqwornwuaA" })
   })
@@ -70,6 +70,17 @@ export class AirtableOutreachGates {
   evaluate({ payload, effectKey, snapshot }) {
     const F=JEF_AIRTABLE.fields, a=snapshot.activity.fields, l=snapshot.lead.fields, c=snapshot.campaign.fields, cmd=snapshot.command.fields;
     const controls={adapterBuildEnabled:true,campaign:scalar(c[F.campaign.status])==="Running"?"ACTIVE":"HOLD",runtime:scalar(c[F.campaign.runtime])==="Running"?"ACTIVE":"HOLD",circuit:scalar(c[F.campaign.circuit])==="Healthy"?"ACTIVE":"HOLD"};
+    const leadAdmission = payload.sequenceStep === "FIRST-TOUCH" ? [
+      scalar(l[F.lead.admission])==="READY",
+      scalar(l[F.lead.admissionGate])==="PASS — CONCATENATION CANDIDATE",
+      scalar(l[F.lead.responsePriority])==="P5 — NEW FIRST TOUCH",
+      scalar(l[F.lead.nextAction])==="FIRST_TOUCH"
+    ] : payload.sequenceStep === "FOLLOW-UP-1" ? [
+      scalar(l[F.lead.followUpAdmission])==="READY",
+      scalar(l[F.lead.followUpGate])==="PASS — FOLLOW-UP CONCATENATION CANDIDATE",
+      scalar(l[F.lead.responsePriority])==="P4 — DUE FOLLOW-UP",
+      scalar(l[F.lead.nextAction])==="FOLLOW_UP"
+    ] : [false];
     const authority = [
       exactIds(a[F.activity.lead],payload.airtableLeadRecordId), exactIds(a[F.activity.campaign],payload.airtableCampaignRecordId),
       exactIds(l[F.lead.campaigns],payload.airtableCampaignRecordId), exactIds(c[F.campaign.commands],payload.airtableCommandRecordId),
@@ -81,9 +92,7 @@ export class AirtableOutreachGates {
       scalar(a[F.activity.templateVersion])===payload.templateVersionSnapshot, scalar(a[F.activity.subject])===payload.finalSubjectSnapshot,
       scalar(a[F.activity.body])===payload.finalBodySnapshot, scalar(a[F.activity.sender])===payload.senderIdentitySnapshot,
       scalar(l[F.lead.id])===payload.leadId, scalar(l[F.lead.recipient])===payload.destination, l[F.lead.dnc]!==true,
-      scalar(l[F.lead.suppressionStatus])==="Clear", scalar(l[F.lead.admission])==="READY",
-      scalar(l[F.lead.admissionGate])==="PASS — CONCATENATION CANDIDATE", scalar(l[F.lead.responsePriority])==="P5 — NEW FIRST TOUCH",
-      scalar(l[F.lead.nextAction])==="FIRST_TOUCH",
+      scalar(l[F.lead.suppressionStatus])==="Clear", ...leadAdmission,
       scalar(c[F.campaign.id])===payload.campaignId, scalar(c[F.campaign.runtimeGate])==="READY — V2 AUTONOMOUS RUNTIME",
       scalar(cmd[F.command.state])==="In Progress", scalar(cmd[F.command.approval])==="Approved",
       scalar(cmd[F.command.gate])==="Approved", scalar(cmd[F.command.integrity])==="READY", scalar(cmd[F.command.health])==="ACTIVE"

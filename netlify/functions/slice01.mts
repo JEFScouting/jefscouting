@@ -4,7 +4,7 @@ import { AirtableOutreachGates, AirtableReadOnlyClient, JEF_AIRTABLE } from "../
 import { GmailApiProvider } from "../../outreach-provider-adapter/src/gmail-provider.js";
 import { PostgresClaimStore } from "../../outreach-provider-adapter/src/postgres-claim-store.js";
 
-const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.5-threaded-followup-preflight";
+const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.6-one-effectkey-canary-boundary";
 const EFFECT_PREFIX = "OUTREACH-SEND";
 const REQUIRED_GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
@@ -46,6 +46,31 @@ function isEffectKey(value: string) {
   return /^OUTREACH-SEND\|[^|]+\|[^|]+\|[^|]+\|[^|]+$/.test(value);
 }
 
+export function hasExactFollowUpCanaryAuthority({
+  configuredEffectKey,
+  operation,
+  suppliedEffectKey,
+  sequenceStep,
+  runtimeMode,
+  sendEnabled,
+}: {
+  configuredEffectKey: unknown;
+  operation: unknown;
+  suppliedEffectKey: unknown;
+  sequenceStep: unknown;
+  runtimeMode: unknown;
+  sendEnabled: unknown;
+}) {
+  if (runtimeMode !== "zero-send" || sendEnabled !== false) return false;
+  if (typeof configuredEffectKey !== "string" || configuredEffectKey !== configuredEffectKey.trim()) return false;
+  const parts = configuredEffectKey.split("|");
+  if (parts.length !== 5 || parts[0] !== EFFECT_PREFIX || parts[4] !== "FOLLOW-UP-1") return false;
+  if (!parts.slice(1).every((part) => /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(part))) return false;
+  return operation === "EXECUTE_FOLLOW_UP"
+    && suppliedEffectKey === configuredEffectKey
+    && sequenceStep === "FOLLOW-UP-1";
+}
+
 function normalizeRfcMessageId(value: string) {
   const trimmed = String(value || "").trim();
   if (!trimmed) return "";
@@ -56,6 +81,14 @@ function normalizeRfcMessageId(value: string) {
 function messageIdHeader(value: string) {
   const normalized = normalizeRfcMessageId(value);
   return normalized ? `<${normalized}>` : "";
+}
+
+function mailboxAddress(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw || /[\r\n\0]/.test(raw)) return "";
+  const angle = raw.match(/<([^<>]+)>$/);
+  const candidate = String(angle?.[1] || raw).trim().toLowerCase();
+  return /^[^\s<>@]+@[^\s<>@]+$/.test(candidate) ? candidate : "";
 }
 
 function parseScopes(value: string) {
@@ -229,7 +262,10 @@ async function freshMailboxReality(payload: any) {
     const destinationLower = destination.toLowerCase();
     const senderLower = String(auth.sender).toLowerCase();
     const inbound = later.filter((message: any) => gmailHeader(message, "From").toLowerCase().includes(destinationLower));
-    const outbound = later.filter((message: any) => gmailHeader(message, "From").toLowerCase().includes(senderLower) && gmailHeader(message, "To").toLowerCase().includes(destinationLower));
+    const outbound = later.filter((message: any) => Array.isArray(message?.labelIds)
+      && message.labelIds.includes("SENT")
+      && gmailHeader(message, "From").toLowerCase().includes(senderLower)
+      && gmailHeader(message, "To").toLowerCase().includes(destinationLower));
     if (inbound.length) return { clear: false, reason: "REPLY_PRESENT", evidenceCount: inbound.length, threadId };
     if (outbound.length) return { clear: false, reason: "FOLLOW_UP_ALREADY_SENT", evidenceCount: outbound.length, threadId };
     return { clear: true, reason: "FRESH_FOLLOW_UP_CLEAR", threadId };
@@ -238,9 +274,12 @@ async function freshMailboxReality(payload: any) {
   throw new FailClosedError("UNSUPPORTED_SEQUENCE_STEP");
 }
 
-function canonicalGmailTransport() {
-  const sender = Netlify.env.get("GMAIL_SENDER_EMAIL") || "";
-  if (!sender) throw new FailClosedError("GMAIL_SENDER_BINDING_REQUIRED");
+function canonicalGmailTransport(authorizedSenderIdentity: string) {
+  const senderMailbox = Netlify.env.get("GMAIL_SENDER_EMAIL") || "";
+  const authorizedMailbox = mailboxAddress(authorizedSenderIdentity);
+  if (!senderMailbox || !authorizedMailbox || mailboxAddress(senderMailbox) !== authorizedMailbox) {
+    throw new FailClosedError("GMAIL_SENDER_BINDING_REQUIRED");
+  }
   const authorize = async () => {
     const auth = await oauthAccessToken();
     const profile = await gmailProfile(auth.accessToken);
@@ -248,7 +287,7 @@ function canonicalGmailTransport() {
     return auth;
   };
   return {
-    sender,
+    sender: authorizedSenderIdentity,
     transport: {
       sendRaw: async ({ raw, threadId }: { raw: string; threadId?: string }) => {
         const auth = await authorize();
@@ -263,8 +302,9 @@ function canonicalGmailTransport() {
   };
 }
 
-async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtimeMode: string, sendEnabled: boolean) {
-  if (runtimeMode !== "production" || !sendEnabled) {
+async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtimeMode: string, sendEnabled: boolean, boundedCanaryAuthorized: boolean) {
+  const productionTransmissionAuthorized = runtimeMode === "production" && sendEnabled;
+  if (!productionTransmissionAuthorized && !boundedCanaryAuthorized) {
     return json(409, { ok: false, error: "PRODUCTION_TRANSMISSION_DISABLED", provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
   }
   const token = Netlify.env.get("AIRTABLE_READONLY_TOKEN") || "";
@@ -284,7 +324,7 @@ async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtim
     if (!reality.clear) {
       return json(200, { ok: true, result: "NO_OP_STALE_MAILBOX", stale_reason: reality.reason, mailbox_evidence_count: reality.evidenceCount ?? null, provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
     }
-    const gmail = canonicalGmailTransport();
+    const gmail = canonicalGmailTransport(payload.senderIdentitySnapshot);
     const adapter = new GmailOutreachV2Adapter({
       claimStore: new PostgresClaimStore({ pool }),
       executionGate: gates,
@@ -393,6 +433,7 @@ export default async (req: Request) => {
   const databaseUrl = Netlify.env.get("DATABASE_URL") || "";
   const runtimeMode = String(Netlify.env.get("OUTREACH_RUNTIME_MODE") || "zero-send");
   const sendEnabled = String(Netlify.env.get("OUTREACH_SEND_ENABLED") || "false").toLowerCase() === "true";
+  const configuredCanaryEffectKey = Netlify.env.get("OUTREACH_CANARY_EFFECT_KEY") || "";
   if (!databaseUrl) return json(503, { ok: false, error: "DATABASE_URL_REQUIRED", version: VERSION });
   if (!new Set(["zero-send", "canary-send", "production"]).has(runtimeMode)) return json(503, { ok: false, error: "RUNTIME_MODE_INVALID", version: VERSION });
   if (runtimeMode === "zero-send" && sendEnabled) return json(503, { ok: false, error: "ZERO_SEND_REQUIRES_SEND_DISABLED", version: VERSION });
@@ -410,7 +451,15 @@ export default async (req: Request) => {
 
   if (op === "EXECUTE_FIRST_TOUCH" || op === "EXECUTE_FOLLOW_UP") {
     try {
-      return await executeCanonicalFirstTouch(args, databaseUrl, runtimeMode, sendEnabled);
+      const boundedCanaryAuthorized = hasExactFollowUpCanaryAuthority({
+        configuredEffectKey: configuredCanaryEffectKey,
+        operation: op,
+        suppliedEffectKey: args.effect_key,
+        sequenceStep: args.payload?.sequenceStep,
+        runtimeMode,
+        sendEnabled,
+      });
+      return await executeCanonicalFirstTouch(args, databaseUrl, runtimeMode, sendEnabled, boundedCanaryAuthorized);
     } catch (error: any) {
       const status = error instanceof FailClosedError ? 409 : 502;
       return json(status, { ok: false, error: String(error?.message || "OUTREACH_EXECUTION_FAILED"), provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
