@@ -65,7 +65,7 @@ test("manual and production modes exist only behind the canonical adapter", () =
 
 test("manual authority is explicit Follow-Up-only and has no EffectKey exception", async () => {
   const {hasManualFollowUpAuthority}=await import(new URL(`../.runtime-build/slice01.mjs?manual=${Date.now()}`,import.meta.url));
-  const exact={operation:"EXECUTE_FOLLOW_UP",sequenceStep:"FOLLOW-UP-1",runtimeMode:"manual",sendEnabled:true};
+  const exact={operation:"EXECUTE_FOLLOW_UP",sequenceStep:"FOLLOW-UP-1",runtimeMode:"manual",sendEnabled:false};
   assert.equal(hasManualFollowUpAuthority(exact),true);
   assert.equal(hasManualFollowUpAuthority({...exact,effectKey:motekV11EffectKey}),true);
   assert.equal(hasManualFollowUpAuthority({...exact,effectKey:otherEffectKey}),true);
@@ -73,9 +73,9 @@ test("manual authority is explicit Follow-Up-only and has no EffectKey exception
     {...exact,operation:"EXECUTE_FIRST_TOUCH",sequenceStep:"FIRST-TOUCH"},
     {...exact,operation:"SEND_PROVIDER"},
     {...exact,sequenceStep:"FIRST-TOUCH"},
-    {...exact,runtimeMode:"zero-send",sendEnabled:false},
-    {...exact,runtimeMode:"production"},
-    {...exact,sendEnabled:false},
+    {...exact,runtimeMode:"zero-send"},
+    {...exact,runtimeMode:"production",sendEnabled:true},
+    {...exact,sendEnabled:true},
   ]) assert.equal(hasManualFollowUpAuthority(changed),false);
 });
 
@@ -122,7 +122,7 @@ test("exact deployed handler path rejects First-Touch in zero-send before any ex
 test("manual mode rejects First-Touch and direct provider operations before any external call", async () => {
   const originalFetch=globalThis.fetch;
   let externalCalls=0;
-  const env=runtimeEnv({OUTREACH_RUNTIME_MODE:"manual",OUTREACH_SEND_ENABLED:"true"});
+  const env=runtimeEnv({OUTREACH_RUNTIME_MODE:"manual",OUTREACH_SEND_ENABLED:"false"});
   globalThis.fetch=async()=>{externalCalls++;throw new Error("EXTERNAL_CALL_FORBIDDEN");};
   globalThis.Netlify={env:{get(key){return env[key] || "";}}};
   try {
@@ -180,7 +180,7 @@ test("production config uses manual Follow-Up mode without a bespoke EffectKey b
   const configured=[...netlifyConfigSource.matchAll(/^\s*OUTREACH_CANARY_EFFECT_KEY\s*=\s*"([^"]*)"\s*$/gm)].map((match)=>match[1]);
   assert.deepEqual(configured,[]);
   assert.match(netlifyConfigSource,/OUTREACH_RUNTIME_MODE\s*=\s*"manual"/);
-  assert.match(netlifyConfigSource,/OUTREACH_SEND_ENABLED\s*=\s*"true"/);
+  assert.match(netlifyConfigSource,/OUTREACH_SEND_ENABLED\s*=\s*"false"/);
   const originalFetch=globalThis.fetch;
   globalThis.fetch=async()=>{throw new Error("EXTERNAL_CALL_FORBIDDEN");};
   globalThis.Netlify={env:{get(){return "";}}};
@@ -241,7 +241,7 @@ test("ordinary Motek v1.1 manual Follow-Up reaches fresh exact-thread preflight 
   const urls=[];
   let providerInvocations=0;
   const env=runtimeEnv({
-    OUTREACH_RUNTIME_MODE:"manual",OUTREACH_SEND_ENABLED:"true",AIRTABLE_READONLY_TOKEN:"read-only",AIRTABLE_BASE_ID:"appveHEw1HrXr8nD1",
+    OUTREACH_RUNTIME_MODE:"manual",OUTREACH_SEND_ENABLED:"false",AIRTABLE_READONLY_TOKEN:"read-only",AIRTABLE_BASE_ID:"appveHEw1HrXr8nD1",
     OUTREACH_AIRTABLE_COMMAND_RECORD_ID:"recpYdDfwJjrpUwyX",OUTREACH_AIRTABLE_CAMPAIGN_RECORD_ID:"reclIlbWpaTcMrc18",OUTREACH_CORRELATION_DOMAIN:"jefscouting.com",
     GMAIL_OAUTH_CLIENT_ID:"client",GMAIL_OAUTH_CLIENT_SECRET:"secret",GMAIL_OAUTH_REFRESH_TOKEN:"refresh",GMAIL_SENDER_EMAIL:"jefscouting@gmail.com",
     GMAIL_OAUTH_SCOPES:"https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly"

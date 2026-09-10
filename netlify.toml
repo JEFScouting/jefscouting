@@ -7,4 +7,4 @@
 
 [context.production.environment]
   OUTREACH_RUNTIME_MODE = "manual"
-  OUTREACH_SEND_ENABLED = "true"
+  OUTREACH_SEND_ENABLED = "false"

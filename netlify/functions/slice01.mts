@@ -93,7 +93,7 @@ export function hasManualFollowUpAuthority({
   sendEnabled: unknown;
 }) {
   return runtimeMode === "manual"
-    && sendEnabled === true
+    && sendEnabled === false
     && operation === "EXECUTE_FOLLOW_UP"
     && sequenceStep === "FOLLOW-UP-1";
 }
@@ -504,8 +504,8 @@ export default async (req: Request) => {
   const configuredCanaryEffectKey = Netlify.env.get("OUTREACH_CANARY_EFFECT_KEY") || "";
   if (!databaseUrl) return json(503, { ok: false, error: "DATABASE_URL_REQUIRED", version: VERSION });
   if (!new Set(["zero-send", "canary-send", "manual", "production"]).has(runtimeMode)) return json(503, { ok: false, error: "RUNTIME_MODE_INVALID", version: VERSION });
-  if (runtimeMode === "zero-send" && sendEnabled) return json(503, { ok: false, error: "ZERO_SEND_REQUIRES_SEND_DISABLED", version: VERSION });
-  if (runtimeMode !== "zero-send" && !sendEnabled) return json(503, { ok: false, error: "SEND_MODE_REQUIRES_SEND_ENABLED", version: VERSION });
+  if (new Set(["zero-send", "manual"]).has(runtimeMode) && sendEnabled) return json(503, { ok: false, error: "GLOBAL_SEND_MUST_REMAIN_DISABLED", version: VERSION });
+  if (new Set(["canary-send", "production"]).has(runtimeMode) && !sendEnabled) return json(503, { ok: false, error: "SEND_MODE_REQUIRES_SEND_ENABLED", version: VERSION });
 
   const args: any = await req.json().catch(() => ({}));
   const op = String(args.op || "").toUpperCase();

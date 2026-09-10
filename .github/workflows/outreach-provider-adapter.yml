@@ -103,7 +103,7 @@ jobs:
           const config = fs.readFileSync('netlify.toml','utf8');
           if (!config.includes('directory = "netlify/outreach-functions"')) throw new Error('Wrong functions directory');
           if (!config.includes('OUTREACH_RUNTIME_MODE = "manual"')) throw new Error('Manual mode not configured');
-          if (!config.includes('OUTREACH_SEND_ENABLED = "true"')) throw new Error('Manual send authority not configured');
+          if (!config.includes('OUTREACH_SEND_ENABLED = "false"')) throw new Error('Global send authority is not disabled');
           if (/OUTREACH_CANARY_EFFECT_KEY/.test(config)) throw new Error('Bespoke EffectKey binding remains');
           console.log('Isolated Outreach release boundary PASS');
           NODE
