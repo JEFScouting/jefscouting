@@ -115,6 +115,17 @@ test("current authority controls fail before claim and produce zero execution ef
   assert.deepEqual(h.effects, { authority: 1, claim: 0, safety: 0, reserve: 0, send: 0, lookup: 0, confirm: 0, unknown: 0, fail: 0 });
 });
 
+test("single manual execution control authorizes without legacy Runtime/Circuit controls", async () => {
+  const manualBinding={...canonicalBinding,controls:{adapterBuildEnabled:true,execution:"ACTIVE",campaign:"ACTIVE",runtime:"HOLD",circuit:"HOLD"}};
+  const h=harness({controls:{adapterBuildEnabled:true},binding:manualBinding});
+  assert.equal((await h.adapter.execute(request)).result,"CONFIRMED");
+  assert.equal(h.effects.send,1);
+  const blocked=harness({controls:{adapterBuildEnabled:true},binding:{...manualBinding,controls:{...manualBinding.controls,execution:"HOLD"}}});
+  await assert.rejects(blocked.adapter.execute(request),FailClosedError);
+  assert.equal(blocked.effects.claim,0);
+  assert.equal(blocked.effects.send,0);
+});
+
 test("governed Motek recovery reaches only the existing claim and stops before provider when safety holds", async () => {
   const h = harness({ binding: recoveryBinding, safety: false });
   await assert.rejects(h.adapter.execute(recoveryRequest), /PRE_PROVIDER_SAFETY_REVALIDATION_FAILED/);

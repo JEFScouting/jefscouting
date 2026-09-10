@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../netlify/functions/slice01.mts", import.meta.url), "utf8");
@@ -8,6 +7,7 @@ const diagnosticSource = await readFile(new URL("../netlify/functions/outreach-a
 const oneShotDiagnosticSource = await readFile(new URL("../netlify/functions/outreach-airtable-gate-diagnostic-once.mts", import.meta.url), "utf8");
 const netlifyConfigSource = await readFile(new URL("../netlify.toml", import.meta.url), "utf8");
 const motekEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-001|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
+const motekV11EffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-001|FOLLOW-UP-ADAPTIVE-v1.1|FOLLOW-UP-1";
 const otherEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-OTHER|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
 const recoveryKind = "CLOSED_NO_PROVIDER_EFFECT_ONCE";
 const hughFailedEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-002|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
@@ -25,8 +25,6 @@ const contaminatedEffectKeys = Object.freeze([
   "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-V163-20260822-HOTELS-BROWARD-HIX-DANIA|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
   "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-V14-20260808-MIA-B1-039|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1"
 ]);
-const motekEffectKeySha256 = createHash("sha256").update(motekEffectKey,"utf8").digest("hex");
-
 function runtimeEnv(overrides={}) {
   return {
     DATABASE_URL:"postgresql://user:pass@example.invalid/db",
@@ -49,13 +47,36 @@ const motekPayload = Object.freeze({
   airtableActivityRecordId:"recsTFnxSZPkWrHFa",airtableLeadRecordId:"rec8xWqvtmWw5U0Rz",airtableCampaignRecordId:"reclIlbWpaTcMrc18",airtableCommandRecordId:"recpYdDfwJjrpUwyX",
   gmailThreadId:"1a0193666357e1f4",priorRfcMessageId:"<CAO+js0xOLCzRRKH=+EYqpTXrC5YoyxqiTK7=Lp6sC+VzmouCrw@mail.gmail.com>"
 });
+const motekV11Payload = Object.freeze({
+  ...motekPayload,
+  messageVersion:"FOLLOW-UP-ADAPTIVE-v1.1",
+  sequenceVersionSnapshot:"FOLLOW-UP-ADAPTIVE-v1.1",
+  templateVersionSnapshot:"FOLLOW-UP-ADAPTIVE-v1.1",
+  airtableActivityRecordId:"rechGpjbcwiw0DS0W",
+});
 
-test("production mode exists only behind the canonical First-Touch adapter", () => {
-  assert.match(source, /new Set\(\["zero-send", "canary-send", "production"\]\)/);
+test("manual and production modes exist only behind the canonical adapter", () => {
+  assert.match(source, /new Set\(\["zero-send", "canary-send", "manual", "production"\]\)/);
   assert.match(source, /op === "EXECUTE_FIRST_TOUCH"/);
   assert.match(source, /new GmailOutreachV2Adapter/);
   assert.match(source, /adapter\.execute/);
   assert.match(source, /PRODUCTION_TRANSMISSION_DISABLED/);
+});
+
+test("manual authority is explicit Follow-Up-only and has no EffectKey exception", async () => {
+  const {hasManualFollowUpAuthority}=await import(new URL(`../.runtime-build/slice01.mjs?manual=${Date.now()}`,import.meta.url));
+  const exact={operation:"EXECUTE_FOLLOW_UP",sequenceStep:"FOLLOW-UP-1",runtimeMode:"manual",sendEnabled:true};
+  assert.equal(hasManualFollowUpAuthority(exact),true);
+  assert.equal(hasManualFollowUpAuthority({...exact,effectKey:motekV11EffectKey}),true);
+  assert.equal(hasManualFollowUpAuthority({...exact,effectKey:otherEffectKey}),true);
+  for (const changed of [
+    {...exact,operation:"EXECUTE_FIRST_TOUCH",sequenceStep:"FIRST-TOUCH"},
+    {...exact,operation:"SEND_PROVIDER"},
+    {...exact,sequenceStep:"FIRST-TOUCH"},
+    {...exact,runtimeMode:"zero-send",sendEnabled:false},
+    {...exact,runtimeMode:"production"},
+    {...exact,sendEnabled:false},
+  ]) assert.equal(hasManualFollowUpAuthority(changed),false);
 });
 
 test("direct SEND_PROVIDER cannot cross the provider boundary", () => {
@@ -98,6 +119,27 @@ test("exact deployed handler path rejects First-Touch in zero-send before any ex
   } finally { globalThis.fetch=originalFetch; delete globalThis.Netlify; }
 });
 
+test("manual mode rejects First-Touch and direct provider operations before any external call", async () => {
+  const originalFetch=globalThis.fetch;
+  let externalCalls=0;
+  const env=runtimeEnv({OUTREACH_RUNTIME_MODE:"manual",OUTREACH_SEND_ENABLED:"true"});
+  globalThis.fetch=async()=>{externalCalls++;throw new Error("EXTERNAL_CALL_FORBIDDEN");};
+  globalThis.Netlify={env:{get(key){return env[key] || "";}}};
+  try {
+    const {default:handler}=await import(new URL(`../.runtime-build/slice01.mjs?manual-negative=${Date.now()}`,import.meta.url));
+    const firstTouch=await handler(runtimeRequest({op:"EXECUTE_FIRST_TOUCH",effect_key:motekV11EffectKey,payload:{...motekV11Payload,sequenceStep:"FIRST-TOUCH",gmailThreadId:undefined,priorRfcMessageId:undefined}}));
+    assert.equal(firstTouch.status,409);
+    assert.equal((await firstTouch.json()).error,"PRODUCTION_TRANSMISSION_DISABLED");
+    const direct=await handler(runtimeRequest({op:"SEND_PROVIDER",effect_key:motekV11EffectKey}));
+    assert.equal(direct.status,409);
+    assert.equal((await direct.json()).error,"CANONICAL_ADAPTER_REQUIRED");
+    const batch=await handler(runtimeRequest({op:"EXECUTE_BATCH"}));
+    assert.equal(batch.status,400);
+    assert.equal((await batch.json()).error,"UNKNOWN_OPERATION");
+    assert.equal(externalCalls,0);
+  } finally { globalThis.fetch=originalFetch; delete globalThis.Netlify; }
+});
+
 test("one-EffectKey canary authority is exact, Follow-Up-only, and zero-send-only", async () => {
   const {hasExactFollowUpCanaryAuthority,hasExactZeroProviderRecoveryAuthority}=await import(new URL(`../.runtime-build/slice01.mjs?authority=${Date.now()}`,import.meta.url));
   const exact={configuredEffectKey:motekEffectKey,operation:"EXECUTE_FOLLOW_UP",suppliedEffectKey:motekEffectKey,sequenceStep:"FOLLOW-UP-1",runtimeMode:"zero-send",sendEnabled:false};
@@ -134,22 +176,26 @@ test("one-EffectKey canary authority is exact, Follow-Up-only, and zero-send-onl
   }
 });
 
-test("production config carries one exact non-secret binding and live identity exposes only its digest", async () => {
+test("production config uses manual Follow-Up mode without a bespoke EffectKey binding", async () => {
   const configured=[...netlifyConfigSource.matchAll(/^\s*OUTREACH_CANARY_EFFECT_KEY\s*=\s*"([^"]*)"\s*$/gm)].map((match)=>match[1]);
-  assert.deepEqual(configured,[motekEffectKey]);
+  assert.deepEqual(configured,[]);
+  assert.match(netlifyConfigSource,/OUTREACH_RUNTIME_MODE\s*=\s*"manual"/);
+  assert.match(netlifyConfigSource,/OUTREACH_SEND_ENABLED\s*=\s*"true"/);
   const originalFetch=globalThis.fetch;
   globalThis.fetch=async()=>{throw new Error("EXTERNAL_CALL_FORBIDDEN");};
-  globalThis.Netlify={env:{get(key){return key==="OUTREACH_CANARY_EFFECT_KEY"?motekEffectKey:"";}}};
+  globalThis.Netlify={env:{get(){return "";}}};
   try {
     const {default:handler}=await import(new URL(`../.runtime-build/slice01.mjs?identity=${Date.now()}`,import.meta.url));
     const response=await handler(new Request("https://runtime.invalid/slice01"));
     const body=await response.json();
     assert.equal(response.status,405);
-    assert.equal(body.canary_effect_key_configured,true);
-    assert.equal(body.canary_effect_key_sha256,motekEffectKeySha256);
-    assert.equal(body.canary_operation,"EXECUTE_FOLLOW_UP");
-    assert.equal(body.canary_sequence_step,"FOLLOW-UP-1");
-    assert.equal(body.zero_provider_recovery_kind,recoveryKind);
+    assert.equal(body.canary_effect_key_configured,false);
+    assert.equal(body.canary_effect_key_sha256,null);
+    assert.equal(body.canary_operation,null);
+    assert.equal(body.canary_sequence_step,null);
+    assert.equal(body.zero_provider_recovery_kind,null);
+    assert.equal(body.manual_follow_up_supported,true);
+    assert.equal(body.autonomous_or_batch_send_supported,false);
     assert.equal(JSON.stringify(body).includes(motekEffectKey),false);
   } finally { globalThis.fetch=originalFetch; delete globalThis.Netlify; }
 });
@@ -190,12 +236,12 @@ test("non-exact canary requests and direct SEND_PROVIDER stay blocked with zero 
   } finally { globalThis.fetch=originalFetch; delete globalThis.Netlify; }
 });
 
-test("exact Motek binding reaches fresh exact-thread preflight but never a provider invocation", async () => {
+test("ordinary Motek v1.1 manual Follow-Up reaches fresh exact-thread preflight but never a provider invocation in tests", async () => {
   const originalFetch=globalThis.fetch;
   const urls=[];
   let providerInvocations=0;
   const env=runtimeEnv({
-    OUTREACH_CANARY_EFFECT_KEY:motekEffectKey,AIRTABLE_READONLY_TOKEN:"read-only",AIRTABLE_BASE_ID:"appveHEw1HrXr8nD1",
+    OUTREACH_RUNTIME_MODE:"manual",OUTREACH_SEND_ENABLED:"true",AIRTABLE_READONLY_TOKEN:"read-only",AIRTABLE_BASE_ID:"appveHEw1HrXr8nD1",
     OUTREACH_AIRTABLE_COMMAND_RECORD_ID:"recpYdDfwJjrpUwyX",OUTREACH_AIRTABLE_CAMPAIGN_RECORD_ID:"reclIlbWpaTcMrc18",OUTREACH_CORRELATION_DOMAIN:"jefscouting.com",
     GMAIL_OAUTH_CLIENT_ID:"client",GMAIL_OAUTH_CLIENT_SECRET:"secret",GMAIL_OAUTH_REFRESH_TOKEN:"refresh",GMAIL_SENDER_EMAIL:"jefscouting@gmail.com",
     GMAIL_OAUTH_SCOPES:"https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly"
@@ -207,7 +253,7 @@ test("exact Motek binding reaches fresh exact-thread preflight but never a provi
     if (url==="https://oauth2.googleapis.com/token") return Response.json({access_token:"access",scope:env.GMAIL_OAUTH_SCOPES});
     if (url.endsWith("/gmail/v1/users/me/profile")) return Response.json({emailAddress:"jefscouting@gmail.com"});
     if (url.includes("/gmail/v1/users/me/threads/1a0193666357e1f4")) return Response.json({messages:[
-      {id:"1a0193666357e1f4",internalDate:"1000",labelIds:["SENT"],payload:{headers:[{name:"Message-ID",value:motekPayload.priorRfcMessageId},{name:"From",value:"JEF Scouting <jefscouting@gmail.com>"},{name:"To",value:"info@motek.com"}]}},
+      {id:"1a0193666357e1f4",internalDate:"1000",labelIds:["SENT"],payload:{headers:[{name:"Message-ID",value:motekV11Payload.priorRfcMessageId},{name:"From",value:"JEF Scouting <jefscouting@gmail.com>"},{name:"To",value:"info@motek.com"}]}},
       {id:"draft-1",internalDate:"2000",labelIds:["DRAFT"],payload:{headers:[{name:"Message-ID",value:"<draft@example.com>"},{name:"From",value:"JEF Scouting <jefscouting@gmail.com>"},{name:"To",value:"info@motek.com"}]}}
     ]});
     if (url.startsWith("https://api.airtable.com/")) return Response.json({error:"intentional read-stop"},{status:500});
@@ -215,7 +261,7 @@ test("exact Motek binding reaches fresh exact-thread preflight but never a provi
   };
   try {
     const {default:handler}=await import(new URL(`../.runtime-build/slice01.mjs?preflight=${Date.now()}`,import.meta.url));
-    const response=await handler(runtimeRequest({op:"EXECUTE_FOLLOW_UP",effect_key:motekEffectKey,recovery_kind:recoveryKind,claimant_id:"test",claim_token:"11111111-1111-4111-8111-111111111111",payload:motekPayload}));
+    const response=await handler(runtimeRequest({op:"EXECUTE_FOLLOW_UP",effect_key:motekV11EffectKey,claimant_id:"test",claim_token:"11111111-1111-4111-8111-111111111111",payload:motekV11Payload}));
     const body=await response.json();
     assert.equal(response.status,409);
     assert.equal(body.error,"AIRTABLE_READ_FAILED_500");
@@ -254,7 +300,7 @@ test("one-shot Airtable diagnostic runner is internal, zero-send, and mutation-f
 });
 
 test("runtime binds Follow-Up Gmail thread and fresh mailbox reality before adapter execution", () => {
-  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.8-zero-provider-recovery-once/);
+  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.9-manual-followup/);
   assert.match(source, /JSON\.stringify\(threadId \? \{ raw, threadId \} : \{ raw \}\)/);
   assert.match(source, /async function freshMailboxReality\(payload: any\)/);
   assert.match(source, /message\.labelIds\.includes\("SENT"\)/);

@@ -7,6 +7,7 @@ on:
     paths:
       - 'outreach-provider-adapter/**'
       - 'netlify/functions/**'
+      - 'netlify/outreach-functions/**'
       - 'test/outreach-runtime-guard.test.mjs'
       - 'package.json'
       - 'netlify.toml'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'outreach-provider-adapter/**'
       - 'netlify/functions/**'
+      - 'netlify/outreach-functions/**'
       - 'test/outreach-runtime-guard.test.mjs'
       - 'package.json'
       - 'netlify.toml'
@@ -73,65 +75,35 @@ jobs:
       - name: Test runtime authority boundary
         run: npm run test:outreach-runtime
 
-  live-runtime-identity:
-    name: Live runtime identity (read-only)
+  release-boundary:
+    name: Isolated Outreach release boundary
     runs-on: ubuntu-latest
     steps:
-      - name: Verify current pre-deploy v1.1.7 identity without authentication or send authority
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Verify source identity, mirrors, and isolated composition
         shell: bash
         run: |
           set -euo pipefail
-          base='https://jef-outreach-next-runtime.netlify.app'
-          expected_version='JEF-OUTREACH-RUNTIME-v1.1.7-event-ledger-bigint-default'
-          body_file="${RUNNER_TEMP}/outreach-live-identity.json"
-
-          probe_get() {
-            local path="$1"
-            curl --silent --show-error --location \
-              --connect-timeout 10 --max-time 20 \
-              --output "${body_file}" \
-              --write-out '%{http_code}' \
-              "${base}${path}"
-          }
-
-          probe_post() {
-            local path="$1"
-            curl --silent --show-error --location \
-              --connect-timeout 10 --max-time 20 \
-              --request POST \
-              --header 'content-type: application/json' \
-              --data '{}' \
-              --output "${body_file}" \
-              --write-out '%{http_code}' \
-              "${base}${path}"
-          }
-
-          canonical_status="$(probe_get '/slice01')"
-          echo "GET /slice01 -> HTTP ${canonical_status}"
-          if [ "${canonical_status}" = '405' ]; then
-            live_path='/slice01'
-            expected_error='POST_ONLY'
-          else
-            native_status="$(probe_post '/.netlify/functions/slice01')"
-            echo "Unauthenticated POST /.netlify/functions/slice01 -> HTTP ${native_status}"
-            if [ "${native_status}" != '401' ]; then
-              echo 'Neither canonical route nor native fail-closed auth boundary reached the expected handler.' >&2
-              cat "${body_file}" >&2
-              exit 1
-            fi
-            live_path='/.netlify/functions/slice01'
-            expected_error='UNAUTHORIZED'
-            echo 'ROUTING_NOTE: /slice01 is not published; native Netlify function route is live.'
-          fi
-
-          BODY_FILE="${body_file}" EXPECTED_VERSION="${expected_version}" EXPECTED_ERROR="${expected_error}" LIVE_PATH="${live_path}" node <<'NODE'
+          cmp netlify/functions/slice01.mts netlify/outreach-functions/slice01.mts
+          node <<'NODE'
           const fs = require('fs');
-          const body = JSON.parse(fs.readFileSync(process.env.BODY_FILE, 'utf8'));
-          if (body.error !== process.env.EXPECTED_ERROR) {
-            throw new Error(`Expected error=${process.env.EXPECTED_ERROR}, received ${JSON.stringify(body.error)}`);
+          const expected = [
+            'outreach-airtable-gate-diagnostic-once.mts',
+            'outreach-airtable-gate-diagnostic.mts',
+            'slice01.mts'
+          ];
+          const actual = fs.readdirSync('netlify/outreach-functions').sort();
+          if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+            throw new Error(`Unexpected isolated function composition: ${JSON.stringify(actual)}`);
           }
-          if (body.version !== process.env.EXPECTED_VERSION) {
-            throw new Error(`Expected version=${process.env.EXPECTED_VERSION}, received ${JSON.stringify(body.version)}`);
-          }
-          console.log(`Live runtime identity PASS at ${process.env.LIVE_PATH}: ${body.version}`);
+          const source = fs.readFileSync('netlify/outreach-functions/slice01.mts','utf8');
+          if (!source.includes('JEF-OUTREACH-RUNTIME-v1.1.9-manual-followup')) throw new Error('Runtime identity mismatch');
+          if (/client-jotform-webhook/i.test(actual.join('\n'))) throw new Error('Jotform function present');
+          const config = fs.readFileSync('netlify.toml','utf8');
+          if (!config.includes('directory = "netlify/outreach-functions"')) throw new Error('Wrong functions directory');
+          if (!config.includes('OUTREACH_RUNTIME_MODE = "manual"')) throw new Error('Manual mode not configured');
+          if (!config.includes('OUTREACH_SEND_ENABLED = "true"')) throw new Error('Manual send authority not configured');
+          if (/OUTREACH_CANARY_EFFECT_KEY/.test(config)) throw new Error('Bespoke EffectKey binding remains');
+          console.log('Isolated Outreach release boundary PASS');
           NODE

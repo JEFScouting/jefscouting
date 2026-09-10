@@ -80,8 +80,14 @@ export class AirtableOutreachGates {
       runtimeMode: payload.runtimeMode
     })) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
     const recoveryRequested = recoveryAuthority !== undefined;
-    const controls={adapterBuildEnabled:true,campaign:scalar(c[F.campaign.status])==="Running"?"ACTIVE":"HOLD",runtime:scalar(c[F.campaign.runtime])==="Running"?"ACTIVE":"HOLD",circuit:scalar(c[F.campaign.circuit])==="Healthy"?"ACTIVE":"HOLD"};
-    const leadAdmission = payload.sequenceStep === "FIRST-TOUCH" ? [
+    const manualFollowUp = !recoveryRequested && payload.runtimeMode === "manual" && payload.sequenceStep === "FOLLOW-UP-1";
+    const campaignActive = scalar(c[F.campaign.status]) === "Running";
+    const runtimeActive = scalar(c[F.campaign.runtime]) === "Running";
+    const circuitActive = scalar(c[F.campaign.circuit]) === "Healthy";
+    const controls={adapterBuildEnabled:true,execution:manualFollowUp?(campaignActive?"ACTIVE":"HOLD"):(campaignActive&&runtimeActive&&circuitActive?"ACTIVE":"HOLD"),campaign:campaignActive?"ACTIVE":"HOLD",runtime:runtimeActive?"ACTIVE":"HOLD",circuit:circuitActive?"ACTIVE":"HOLD"};
+    const leadAdmission = manualFollowUp ? [
+      scalar(l[F.lead.followUpGate])==="PASS — FOLLOW-UP CONCATENATION CANDIDATE"
+    ] : payload.sequenceStep === "FIRST-TOUCH" ? [
       scalar(l[F.lead.admission])==="READY",
       scalar(l[F.lead.admissionGate])==="PASS — CONCATENATION CANDIDATE",
       scalar(l[F.lead.responsePriority])==="P5 — NEW FIRST TOUCH",
@@ -109,6 +115,14 @@ export class AirtableOutreachGates {
       scalar(a[F.activity.state])==="READY",
       scalar(a[F.activity.contractGate])==="PASS — EFFECT READY"
     ];
+    const campaignAndCommandAuthority = manualFollowUp ? [
+      scalar(cmd[F.command.approval])==="Approved",
+      scalar(cmd[F.command.integrity])==="READY"
+    ] : [
+      scalar(c[F.campaign.runtimeGate])==="READY — V2 AUTONOMOUS RUNTIME",
+      scalar(cmd[F.command.state])==="In Progress", scalar(cmd[F.command.approval])==="Approved",
+      scalar(cmd[F.command.gate])==="Approved", scalar(cmd[F.command.integrity])==="READY", scalar(cmd[F.command.health])==="ACTIVE"
+    ];
     const authority = [
       exactIds(a[F.activity.lead],payload.airtableLeadRecordId), exactIds(a[F.activity.campaign],payload.airtableCampaignRecordId),
       exactIds(l[F.lead.campaigns],payload.airtableCampaignRecordId), exactIds(c[F.campaign.commands],payload.airtableCommandRecordId),
@@ -121,11 +135,9 @@ export class AirtableOutreachGates {
       scalar(a[F.activity.body])===payload.finalBodySnapshot, scalar(a[F.activity.sender])===payload.senderIdentitySnapshot,
       scalar(l[F.lead.id])===payload.leadId, scalar(l[F.lead.recipient])===payload.destination, l[F.lead.dnc]!==true,
       scalar(l[F.lead.suppressionStatus])==="Clear", ...leadAdmission,
-      scalar(c[F.campaign.id])===payload.campaignId, scalar(c[F.campaign.runtimeGate])==="READY — V2 AUTONOMOUS RUNTIME",
-      scalar(cmd[F.command.state])==="In Progress", scalar(cmd[F.command.approval])==="Approved",
-      scalar(cmd[F.command.gate])==="Approved", scalar(cmd[F.command.integrity])==="READY", scalar(cmd[F.command.health])==="ACTIVE"
+      scalar(c[F.campaign.id])===payload.campaignId, ...campaignAndCommandAuthority
     ];
-    const decision=authority.every(Boolean)&&Object.values(controls).every((v)=>v===true||v==="ACTIVE")?"AUTHORIZED":"HOLD";
+    const decision=authority.every(Boolean)&&controls.execution==="ACTIVE"?"AUTHORIZED":"HOLD";
     return {decision,commandId:scalar(cmd[F.command.id])||"",releaseId:snapshot.campaign.id,authorityVersion:scalar(c[F.campaign.engineVersion])||"",effectKey,payloadFingerprint:canonicalPayloadFingerprint(payload),verifiedRecipient:scalar(a[F.activity.recipient])||"",senderIdentity:scalar(a[F.activity.sender])||"",correlationDomain:this.correlationDomain,controls,recoveryKind:recoveryRequested?ZERO_PROVIDER_RECOVERY_KIND:null};
   }
 

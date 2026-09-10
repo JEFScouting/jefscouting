@@ -10,6 +10,7 @@ const ids={activity:"recAAAAAAAAAAAAAA",lead:"recBBBBBBBBBBBBBB",campaign:"reclI
 const payload={contractVersion:"outreach-v2",suppressionCleared:true,campaignId:"JEF-CAMPAIGN",leadId:"LEAD-1",messageVersion:"v4.1",sequenceStep:"FIRST-TOUCH",destination:"person@example.com",subject:"Subject",textBody:"Body",sequenceInstanceKey:"SEQ-1",sequenceVersionSnapshot:"SEQ-v1",templateVersionSnapshot:"v4.1",senderIdentitySnapshot:"hello@jefscouting.com",verifiedRecipient:"person@example.com",finalSubjectSnapshot:"Subject",finalBodySnapshot:"Body",priorContactSnapshot:"CLEAR",airtableActivityRecordId:ids.activity,airtableLeadRecordId:ids.lead,airtableCampaignRecordId:ids.campaign,airtableCommandRecordId:ids.command,runtimeMode:"production"};
 const effectKey="OUTREACH-SEND|JEF-CAMPAIGN|LEAD-1|v4.1|FIRST-TOUCH";
 const followUpPayload={...payload,messageVersion:"FOLLOW-UP-ADAPTIVE-v1.0",sequenceStep:"FOLLOW-UP-1",sequenceInstanceKey:"SEQ-FU-1",sequenceVersionSnapshot:"FOLLOW-UP-ADAPTIVE-v1.0",templateVersionSnapshot:"FOLLOW-UP-ADAPTIVE-v1.0",gmailThreadId:"thread-1",priorRfcMessageId:"<prior@example.com>"};
+const manualFollowUpPayload={...followUpPayload,runtimeMode:"manual"};
 const followUpEffectKey="OUTREACH-SEND|JEF-CAMPAIGN|LEAD-1|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
 const recoveryPayload={...followUpPayload,campaignId:"JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY",leadId:"LEAD-ANCHOR-20260819-001",sequenceInstanceKey:"OUTREACH-SEQUENCE|LEAD-ANCHOR-20260819-001|GMAIL-THREAD|1a0193666357e1f4",destination:"info@motek.com",verifiedRecipient:"info@motek.com",gmailThreadId:"1a0193666357e1f4",runtimeMode:"zero-send"};
 const recoveryAuthority={kind:ZERO_PROVIDER_RECOVERY_KIND,effectKey:GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY};
@@ -41,6 +42,22 @@ function gate(dataset){return new AirtableOutreachGates({client:{async getRecord
 
 test("exact canonical IDs and all current gates authorize",async()=>{const binding=await gate(records()).readCurrent({payload,effectKey});assert.equal(binding.decision,"AUTHORIZED");assert.equal((await gate(records()).revalidate({payload,effectKey,payloadFingerprint:binding.payloadFingerprint})).suppressionCleared,true);});
 test("FOLLOW-UP-1 uses the current Follow-Up admission gates without accepting First-Touch admission",async()=>{const data=records({requestPayload:followUpPayload,requestEffectKey:followUpEffectKey});const binding=await gate(data).readCurrent({payload:followUpPayload,effectKey:followUpEffectKey});assert.equal(binding.decision,"AUTHORIZED");data[ids.lead].fields[F.lead.followUpGate]="HOLD";assert.equal((await gate(data).readCurrent({payload:followUpPayload,effectKey:followUpEffectKey})).decision,"HOLD");});
+test("manual Follow-Up uses Campaign as its single execution switch while legacy Runtime/Circuit remain diagnostic",async()=>{
+  const data=records({requestPayload:manualFollowUpPayload,requestEffectKey:followUpEffectKey});
+  data[ids.campaign].fields[F.campaign.runtime]="Paused";
+  data[ids.campaign].fields[F.campaign.circuit]="Paused";
+  data[ids.campaign].fields[F.campaign.runtimeGate]="HOLD — V2 PAUSED";
+  data[ids.command].fields[F.command.state]="Completed";
+  data[ids.command].fields[F.command.gate]="HOLD";
+  data[ids.command].fields[F.command.health]="INACTIVE";
+  const binding=await gate(data).readCurrent({payload:manualFollowUpPayload,effectKey:followUpEffectKey});
+  assert.equal(binding.decision,"AUTHORIZED");
+  assert.equal(binding.controls.execution,"ACTIVE");
+  assert.equal(binding.controls.runtime,"HOLD");
+  assert.equal(binding.controls.circuit,"HOLD");
+  data[ids.campaign].fields[F.campaign.status]="Paused";
+  assert.equal((await gate(data).readCurrent({payload:manualFollowUpPayload,effectKey:followUpEffectKey})).decision,"HOLD");
+});
 test("Motek recovery requires every closed-zero-provider Airtable control",async()=>{
   const data=records({requestPayload:recoveryPayload,requestEffectKey:GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY,recovery:true});
   const request={payload:recoveryPayload,effectKey:GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY,claimToken:recoveryClaimToken,claimantId:recoveryClaimant,recoveryAuthority};

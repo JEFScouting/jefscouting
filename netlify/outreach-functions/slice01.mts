@@ -9,7 +9,7 @@ import { AirtableOutreachGates, AirtableReadOnlyClient, JEF_AIRTABLE } from "../
 import { GmailApiProvider } from "../../outreach-provider-adapter/src/gmail-provider.js";
 import { PostgresClaimStore } from "../../outreach-provider-adapter/src/postgres-claim-store.js";
 
-const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.8-zero-provider-recovery-once";
+const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.9-manual-followup";
 const EFFECT_PREFIX = "OUTREACH-SEND";
 const REQUIRED_GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
@@ -78,6 +78,23 @@ export function hasExactFollowUpCanaryAuthority({
   if (!exactBinding) return false;
   return operation === "EXECUTE_FOLLOW_UP"
     && suppliedEffectKey === exactBinding
+    && sequenceStep === "FOLLOW-UP-1";
+}
+
+export function hasManualFollowUpAuthority({
+  operation,
+  sequenceStep,
+  runtimeMode,
+  sendEnabled,
+}: {
+  operation: unknown;
+  sequenceStep: unknown;
+  runtimeMode: unknown;
+  sendEnabled: unknown;
+}) {
+  return runtimeMode === "manual"
+    && sendEnabled === true
+    && operation === "EXECUTE_FOLLOW_UP"
     && sequenceStep === "FOLLOW-UP-1";
 }
 
@@ -338,9 +355,9 @@ function canonicalGmailTransport(authorizedSenderIdentity: string) {
   };
 }
 
-async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtimeMode: string, sendEnabled: boolean, boundedCanaryAuthorized: boolean, recoveryAuthority?: { kind: string; effectKey: string }) {
+async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtimeMode: string, sendEnabled: boolean, boundedCanaryAuthorized: boolean, manualFollowUpAuthorized: boolean, recoveryAuthority?: { kind: string; effectKey: string }) {
   const productionTransmissionAuthorized = runtimeMode === "production" && sendEnabled;
-  if (!productionTransmissionAuthorized && !boundedCanaryAuthorized) {
+  if (!productionTransmissionAuthorized && !boundedCanaryAuthorized && !manualFollowUpAuthorized) {
     return json(409, { ok: false, error: "PRODUCTION_TRANSMISSION_DISABLED", provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
   }
   const token = Netlify.env.get("AIRTABLE_READONLY_TOKEN") || "";
@@ -469,6 +486,8 @@ export default async (req: Request) => {
       canary_operation: exactBinding ? "EXECUTE_FOLLOW_UP" : null,
       canary_sequence_step: exactBinding ? "FOLLOW-UP-1" : null,
       zero_provider_recovery_kind: recoveryBound ? ZERO_PROVIDER_RECOVERY_KIND : null,
+      manual_follow_up_supported: true,
+      autonomous_or_batch_send_supported: false,
     });
   }
 
@@ -484,7 +503,7 @@ export default async (req: Request) => {
   const sendEnabled = String(Netlify.env.get("OUTREACH_SEND_ENABLED") || "false").toLowerCase() === "true";
   const configuredCanaryEffectKey = Netlify.env.get("OUTREACH_CANARY_EFFECT_KEY") || "";
   if (!databaseUrl) return json(503, { ok: false, error: "DATABASE_URL_REQUIRED", version: VERSION });
-  if (!new Set(["zero-send", "canary-send", "production"]).has(runtimeMode)) return json(503, { ok: false, error: "RUNTIME_MODE_INVALID", version: VERSION });
+  if (!new Set(["zero-send", "canary-send", "manual", "production"]).has(runtimeMode)) return json(503, { ok: false, error: "RUNTIME_MODE_INVALID", version: VERSION });
   if (runtimeMode === "zero-send" && sendEnabled) return json(503, { ok: false, error: "ZERO_SEND_REQUIRES_SEND_DISABLED", version: VERSION });
   if (runtimeMode !== "zero-send" && !sendEnabled) return json(503, { ok: false, error: "SEND_MODE_REQUIRES_SEND_ENABLED", version: VERSION });
 
@@ -508,6 +527,12 @@ export default async (req: Request) => {
         runtimeMode,
         sendEnabled,
       });
+      const manualFollowUpAuthorized = hasManualFollowUpAuthority({
+        operation: op,
+        sequenceStep: args.payload?.sequenceStep,
+        runtimeMode,
+        sendEnabled,
+      });
       const recoveryKindProvided = Object.prototype.hasOwnProperty.call(args, "recovery_kind");
       const recoveryAuthorized = hasExactZeroProviderRecoveryAuthority({
         boundedCanaryAuthorized,
@@ -522,7 +547,7 @@ export default async (req: Request) => {
       const recoveryAuthority = recoveryAuthorized
         ? Object.freeze({ kind: ZERO_PROVIDER_RECOVERY_KIND, effectKey: String(args.effect_key) })
         : undefined;
-      return await executeCanonicalFirstTouch(args, databaseUrl, runtimeMode, sendEnabled, boundedCanaryAuthorized, recoveryAuthority);
+      return await executeCanonicalFirstTouch(args, databaseUrl, runtimeMode, sendEnabled, boundedCanaryAuthorized, manualFollowUpAuthorized, recoveryAuthority);
     } catch (error: any) {
       const status = error instanceof FailClosedError ? 409 : 502;
       return json(status, { ok: false, error: String(error?.message || "OUTREACH_EXECUTION_FAILED"), provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
@@ -533,12 +558,13 @@ export default async (req: Request) => {
     const rows = await sql`SELECT COUNT(*)::int AS effect_count FROM outreach_effects`;
     return json(200, {
       ok: true,
-      result: runtimeMode === "zero-send" ? "HEALTHY_ZERO_SEND" : "HEALTHY_SEND_GATED",
+      result: runtimeMode === "zero-send" ? "HEALTHY_ZERO_SEND" : runtimeMode === "manual" ? "HEALTHY_MANUAL_FOLLOW_UP" : "HEALTHY_SEND_GATED",
       version: VERSION,
       runtime_mode: runtimeMode,
       send_enabled: sendEnabled,
       provider_adapter: runtimeMode === "zero-send" ? "LOOKUP_ONLY_DIAGNOSTIC" : "GMAIL_SEND_GATED",
       provider_invocation_budget: runtimeMode === "zero-send" ? 0 : 1,
+      autonomous_or_batch_send_enabled: false,
       database_reachable: true,
       effect_count: rows[0]?.effect_count ?? null,
       gmail_binding_present: Boolean(Netlify.env.get("GMAIL_OAUTH_CLIENT_ID") && Netlify.env.get("GMAIL_OAUTH_CLIENT_SECRET") && Netlify.env.get("GMAIL_OAUTH_REFRESH_TOKEN") && Netlify.env.get("GMAIL_SENDER_EMAIL")),

@@ -48,7 +48,9 @@ export function canonicalPayloadFingerprint(payload) {
 }
 
 function requireSafeControls(controls) {
-  if (!controls?.adapterBuildEnabled || controls.campaign !== "ACTIVE" || controls.runtime !== "ACTIVE" || controls.circuit !== "ACTIVE") throw new FailClosedError("PRODUCTION_CONTROLS_NO_GO");
+  const legacyProductionControlsActive = controls?.campaign === "ACTIVE" && controls?.runtime === "ACTIVE" && controls?.circuit === "ACTIVE";
+  const executionControlActive = controls?.execution === "ACTIVE" || (controls?.execution === undefined && legacyProductionControlsActive);
+  if (!controls?.adapterBuildEnabled || !executionControlActive) throw new FailClosedError("PRODUCTION_CONTROLS_NO_GO");
 }
 
 function requireCanonicalExecutionBinding(binding, { payload, effectKey, recoveryAuthority }) {
