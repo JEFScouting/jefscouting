@@ -1,3 +1,10 @@
 [build]
   command = ""
   publish = "."
+
+[functions]
+  directory = "netlify/outreach-functions"
+
+[context.production.environment]
+  OUTREACH_RUNTIME_MODE = "manual"
+  OUTREACH_SEND_ENABLED = "false"
