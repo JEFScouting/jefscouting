@@ -39,6 +39,37 @@ function runtimeRequest(body) {
   return new Request("https://runtime.invalid/slice01",{method:"POST",headers:{"content-type":"application/json","x-outreach-runtime-secret":"test-secret"},body:JSON.stringify(body)});
 }
 
+let oauthDiagnosticImport = 0;
+async function runOAuthRefreshDiagnostic(googleBody, status=400) {
+  const originalFetch=globalThis.fetch;
+  const urls=[];
+  const env=runtimeEnv({
+    OUTREACH_RUNTIME_MODE:"manual",
+    OUTREACH_SEND_ENABLED:"false",
+    GMAIL_OAUTH_CLIENT_ID:"client-id-value",
+    GMAIL_OAUTH_CLIENT_SECRET:"client-secret-value",
+    GMAIL_OAUTH_REFRESH_TOKEN:"refresh-token-value",
+    GMAIL_SENDER_EMAIL:"jefscouting@gmail.com",
+    GMAIL_OAUTH_SCOPES:"https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly",
+  });
+  globalThis.Netlify={env:{get(key){return env[key] || "";}}};
+  globalThis.fetch=async(input)=>{
+    const url=String(input);
+    urls.push(url);
+    if (url !== "https://oauth2.googleapis.com/token") throw new Error("NON_OAUTH_DIAGNOSTIC_CALL_FORBIDDEN");
+    return Response.json(googleBody,{status});
+  };
+  try {
+    oauthDiagnosticImport += 1;
+    const {default:handler}=await import(new URL(`../.runtime-build/slice01.mjs?oauth-diagnostic=${oauthDiagnosticImport}`,import.meta.url));
+    const response=await handler(runtimeRequest({op:"GMAIL_OAUTH_REFRESH_DIAGNOSTIC"}));
+    return {response,body:await response.json(),urls};
+  } finally {
+    globalThis.fetch=originalFetch;
+    delete globalThis.Netlify;
+  }
+}
+
 const motekPayload = Object.freeze({
   contractVersion:"outreach-v2",suppressionCleared:true,campaignId:"JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY",leadId:"LEAD-ANCHOR-20260819-001",
   messageVersion:"FOLLOW-UP-ADAPTIVE-v1.0",sequenceStep:"FOLLOW-UP-1",destination:"info@motek.com",subject:"Following up - hospitality support for Motek / Happy Corner Hospitality",textBody:"Frozen body",
@@ -272,6 +303,85 @@ test("ordinary Motek v1.1 manual Follow-Up reaches fresh exact-thread preflight 
   } finally { globalThis.fetch=originalFetch; delete globalThis.Netlify; }
 });
 
+test("OAuth refresh diagnostic safely exposes invalid_grant without reaching Gmail", async () => {
+  const {response,body,urls}=await runOAuthRefreshDiagnostic({
+    error:"invalid_grant",
+    error_description:"Token has been expired or revoked.",
+  });
+  assert.equal(response.status,502);
+  assert.equal(body.error,"invalid_grant");
+  assert.equal(body.error_description,"Token has been expired or revoked.");
+  assert.deepEqual(urls,["https://oauth2.googleapis.com/token"]);
+  assert.equal(body.provider_send_called,false);
+  assert.equal(body.provider_call_count,0);
+  assert.equal(body.business_state_mutation,false);
+});
+
+test("OAuth refresh diagnostic safely exposes invalid_client without reaching Gmail", async () => {
+  const {response,body,urls}=await runOAuthRefreshDiagnostic({
+    error:"invalid_client",
+    error_description:"The OAuth client was not found.",
+  });
+  assert.equal(response.status,502);
+  assert.equal(body.error,"invalid_client");
+  assert.equal(body.error_description,"The OAuth client was not found.");
+  assert.deepEqual(urls,["https://oauth2.googleapis.com/token"]);
+  assert.equal(body.provider_send_called,false);
+  assert.equal(body.provider_call_count,0);
+});
+
+test("successful OAuth refresh diagnostic discards the access token and still cannot reach Gmail", async () => {
+  const {response,body,urls}=await runOAuthRefreshDiagnostic({
+    access_token:"access-value",
+    scope:"https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly",
+  },200);
+  const serialized=JSON.stringify(body);
+  assert.equal(response.status,200);
+  assert.equal(body.result,"OAUTH_REFRESH_OK");
+  assert.equal(serialized.includes("access-value"),false);
+  assert.equal(serialized.includes("access_token"),false);
+  assert.deepEqual(urls,["https://oauth2.googleapis.com/token"]);
+  assert.equal(body.provider_boundary_crossed,false);
+  assert.equal(body.provider_send_called,false);
+  assert.equal(body.provider_call_count,0);
+  assert.equal(body.business_state_mutation,false);
+});
+
+test("unknown OAuth error classes fail closed without reflecting raw provider content", async () => {
+  const {response,body}=await runOAuthRefreshDiagnostic({
+    error:"unexpected_provider_error",
+    error_description:"raw provider detail must not be reflected",
+  });
+  assert.equal(response.status,502);
+  assert.equal(body.error,"unknown_oauth_error");
+  assert.equal(body.error_description,"Google OAuth token refresh failed with an unrecognized error class.");
+  assert.doesNotMatch(JSON.stringify(body),/unexpected_provider_error|raw provider detail/);
+});
+
+test("OAuth refresh diagnostic redacts credential fields and never enters a provider send path", async () => {
+  const forbiddenValues=["client-id-value","client-secret-value","refresh-token-value","access-value","auth-code-value"];
+  const {response,body,urls}=await runOAuthRefreshDiagnostic({
+    error:"invalid_grant",
+    error_description:"client_id=client-id-value client_secret=client-secret-value refresh_token=refresh-token-value access_token=access-value authorization_code=auth-code-value",
+    access_token:"access-value",
+    refresh_token:"refresh-token-value",
+    client_secret:"client-secret-value",
+    authorization_code:"auth-code-value",
+    nested:{request_body:"must not escape"},
+  });
+  const serialized=JSON.stringify(body);
+  assert.equal(response.status,502);
+  assert.equal(body.error,"invalid_grant");
+  assert.match(body.error_description,/\[REDACTED/);
+  for (const value of forbiddenValues) assert.equal(serialized.includes(value),false);
+  for (const field of ["access_token","refresh_token","client_secret","authorization_code","request_body"]) assert.equal(serialized.includes(field),false);
+  assert.deepEqual(urls,["https://oauth2.googleapis.com/token"]);
+  assert.equal(body.provider_boundary_crossed,false);
+  assert.equal(body.provider_send_called,false);
+  assert.equal(body.provider_call_count,0);
+  assert.equal(body.business_state_mutation,false);
+});
+
 test("Airtable gate diagnostic is shared-secret protected and zero-send only", () => {
   assert.match(diagnosticSource, /OUTREACH_RUNTIME_SHARED_SECRET/);
   assert.match(diagnosticSource, /x-outreach-runtime-secret/);
@@ -300,7 +410,7 @@ test("one-shot Airtable diagnostic runner is internal, zero-send, and mutation-f
 });
 
 test("runtime binds Follow-Up Gmail thread and fresh mailbox reality before adapter execution", () => {
-  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.9-manual-followup/);
+  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.10-oauth-error-observability/);
   assert.match(source, /JSON\.stringify\(threadId \? \{ raw, threadId \} : \{ raw \}\)/);
   assert.match(source, /async function freshMailboxReality\(payload: any\)/);
   assert.match(source, /message\.labelIds\.includes\("SENT"\)/);

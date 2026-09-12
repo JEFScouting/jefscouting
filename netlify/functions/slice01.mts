@@ -9,12 +9,22 @@ import { AirtableOutreachGates, AirtableReadOnlyClient, JEF_AIRTABLE } from "../
 import { GmailApiProvider } from "../../outreach-provider-adapter/src/gmail-provider.js";
 import { PostgresClaimStore } from "../../outreach-provider-adapter/src/postgres-claim-store.js";
 
-const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.9-manual-followup";
+const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.10-oauth-error-observability";
 const EFFECT_PREFIX = "OUTREACH-SEND";
 const REQUIRED_GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/gmail.readonly",
 ];
+const OAUTH_TOKEN_ERROR_CLASSES = new Set([
+  "invalid_request",
+  "invalid_client",
+  "invalid_grant",
+  "unauthorized_client",
+  "unsupported_grant_type",
+  "invalid_scope",
+]);
+const OAUTH_UNKNOWN_ERROR = "unknown_oauth_error";
+const OAUTH_UNKNOWN_DESCRIPTION = "Google OAuth token refresh failed with an unrecognized error class.";
 
 function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -155,6 +165,44 @@ function hasRequiredScopes(scopes: string[]) {
   return REQUIRED_GMAIL_SCOPES.every((scope) => scopes.includes(scope));
 }
 
+function sanitizeOAuthErrorDescription(value: unknown, credentialValues: string[]) {
+  if (typeof value !== "string") return "Google OAuth token refresh failed without an error description.";
+  let sanitized = value
+    .slice(0, 2048)
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  sanitized = sanitized
+    .replace(/\b(?:access_token|refresh_token|client_secret|authorization_code)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "[REDACTED_CREDENTIAL]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/=\-]+/gi, "Bearer [REDACTED]");
+  for (const credential of new Set(credentialValues.filter((item) => item.length >= 4))) {
+    sanitized = sanitized.split(credential).join("[REDACTED]");
+  }
+  sanitized = sanitized.slice(0, 512).trim();
+  return sanitized || "Google OAuth token refresh failed without an error description.";
+}
+
+function oauthFailureDiagnostic(payload: any, credentialValues: string[]) {
+  const candidate = typeof payload?.error === "string" ? payload.error.trim() : "";
+  if (!OAUTH_TOKEN_ERROR_CLASSES.has(candidate)) {
+    return Object.freeze({ error: OAUTH_UNKNOWN_ERROR, error_description: OAUTH_UNKNOWN_DESCRIPTION });
+  }
+  return Object.freeze({
+    error: candidate,
+    error_description: sanitizeOAuthErrorDescription(payload?.error_description, credentialValues),
+  });
+}
+
+class OAuthRefreshError extends Error {
+  readonly oauthDiagnostic: Readonly<{ error: string; error_description: string }>;
+
+  constructor(status: number, oauthDiagnostic: Readonly<{ error: string; error_description: string }>) {
+    super(`OAUTH_REFRESH_FAILED_${status}`);
+    this.name = "OAuthRefreshError";
+    this.oauthDiagnostic = oauthDiagnostic;
+  }
+}
+
 function b64url(value: string) {
   const bytes = new TextEncoder().encode(value);
   let binary = "";
@@ -203,7 +251,12 @@ async function oauthAccessToken() {
     body,
   });
   const token: any = await resp.json().catch(() => ({}));
-  if (!resp.ok || !token?.access_token) throw new Error(`OAUTH_REFRESH_FAILED_${resp.status}`);
+  if (!resp.ok || !token?.access_token) {
+    throw new OAuthRefreshError(
+      resp.status,
+      oauthFailureDiagnostic(token, [clientId, clientSecret, refreshToken]),
+    );
+  }
   const grantedScopes = parseScopes(token.scope || "");
   if (grantedScopes.length && !hasRequiredScopes(grantedScopes)) throw new Error("OAUTH_GRANTED_SCOPES_INCOMPLETE");
   return { accessToken: token.access_token as string, sender, configuredScopes, grantedScopes };
@@ -597,6 +650,55 @@ export default async (req: Request) => {
       });
     } catch (error: any) {
       return json(502, { ok: false, error: String(error?.message || "GMAIL_DIAGNOSTIC_FAILED"), version: VERSION, provider_send_called: false, provider_call_count: 0, automatic_retry: false });
+    }
+  }
+
+  if (op === "GMAIL_OAUTH_REFRESH_DIAGNOSTIC") {
+    if (sendEnabled) {
+      return json(409, {
+        ok: false,
+        error: "OAUTH_DIAGNOSTIC_REQUIRES_SEND_DISABLED",
+        version: VERSION,
+        provider_send_called: false,
+        provider_call_count: 0,
+        business_state_mutation: false,
+      });
+    }
+    try {
+      await oauthAccessToken();
+      return json(200, {
+        ok: true,
+        result: "OAUTH_REFRESH_OK",
+        version: VERSION,
+        provider_boundary_crossed: false,
+        provider_send_called: false,
+        provider_call_count: 0,
+        business_state_mutation: false,
+        automatic_retry: false,
+      });
+    } catch (error: any) {
+      if (error instanceof OAuthRefreshError) {
+        return json(502, {
+          ok: false,
+          ...error.oauthDiagnostic,
+          version: VERSION,
+          provider_boundary_crossed: false,
+          provider_send_called: false,
+          provider_call_count: 0,
+          business_state_mutation: false,
+          automatic_retry: false,
+        });
+      }
+      return json(502, {
+        ok: false,
+        error: String(error?.message || "OAUTH_REFRESH_DIAGNOSTIC_FAILED"),
+        version: VERSION,
+        provider_boundary_crossed: false,
+        provider_send_called: false,
+        provider_call_count: 0,
+        business_state_mutation: false,
+        automatic_retry: false,
+      });
     }
   }
 

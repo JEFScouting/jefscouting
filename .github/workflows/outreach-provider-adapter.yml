@@ -98,7 +98,7 @@ jobs:
             throw new Error(`Unexpected isolated function composition: ${JSON.stringify(actual)}`);
           }
           const source = fs.readFileSync('netlify/outreach-functions/slice01.mts','utf8');
-          if (!source.includes('JEF-OUTREACH-RUNTIME-v1.1.9-manual-followup')) throw new Error('Runtime identity mismatch');
+          if (!source.includes('JEF-OUTREACH-RUNTIME-v1.1.10-oauth-error-observability')) throw new Error('Runtime identity mismatch');
           if (/client-jotform-webhook/i.test(actual.join('\n'))) throw new Error('Jotform function present');
           const config = fs.readFileSync('netlify.toml','utf8');
           if (!config.includes('directory = "netlify/outreach-functions"')) throw new Error('Wrong functions directory');
