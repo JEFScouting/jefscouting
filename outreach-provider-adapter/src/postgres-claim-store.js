@@ -1,4 +1,9 @@
-import { ZERO_PROVIDER_RECOVERY_KIND, isZeroProviderRecoveryAuthority } from "./adapter.js";
+import {
+  LEGACY_ZERO_PROVIDER_IMPORT_KIND,
+  ZERO_PROVIDER_RECOVERY_KIND,
+  isLegacyZeroProviderImportAuthority,
+  isZeroProviderRecoveryAuthority
+} from "./adapter.js";
 
 export class PostgresClaimStore {
   constructor({ pool, tableName = "outreach_effects", eventTableName = "outreach_effect_events" }) {
@@ -23,11 +28,112 @@ export class PostgresClaimStore {
       throw new TypeError("CLAIM_IDENTITY_REQUIRED");
     }
     if (recoveryAuthority !== undefined) {
-      if (!isZeroProviderRecoveryAuthority(recoveryAuthority, {
+      const sameClaimRecovery = isZeroProviderRecoveryAuthority(recoveryAuthority, {
         effectKey,
         sequenceStep: payload.sequenceStep,
         runtimeMode: payload.runtimeMode
-      })) throw new TypeError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
+      });
+      const legacyImportRecovery = isLegacyZeroProviderImportAuthority(recoveryAuthority, {
+        effectKey,
+        activityRecordId: payload.airtableActivityRecordId,
+        campaignId: payload.campaignId,
+        destination: payload.destination,
+        gmailThreadId: payload.gmailThreadId,
+        leadId: payload.leadId,
+        messageVersion: payload.messageVersion,
+        sequenceStep: payload.sequenceStep,
+        runtimeMode: payload.runtimeMode
+      });
+      if (!sameClaimRecovery && !legacyImportRecovery) throw new TypeError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
+
+      if (legacyImportRecovery) {
+        const imported = await this.pool.query(
+          `WITH inserted_effect AS (
+             INSERT INTO ${this.tableName} (
+               effect_key, claim_token, claimant_id, claimed_at, campaign_id, lead_id,
+               destination, message_version, sequence_step, state, runtime_mode,
+               provider_invocation_count, provider_payload_fingerprint, updated_at
+             )
+             SELECT $1, $2::uuid, $3, NOW(), $4, $5, $6, $7, $8,
+                    'CLAIMED', $9, 0, $10, NOW()
+              WHERE NOT EXISTS (
+                SELECT 1 FROM ${this.eventTableName} existing_history
+                 WHERE existing_history.effect_key = $1
+              )
+             ON CONFLICT (effect_key) DO NOTHING
+             RETURNING effect_key, claim_token::text, claimant_id, state,
+                       provider_invocation_count, provider_payload_fingerprint
+           ),
+           historical_event AS (
+             INSERT INTO ${this.eventTableName} (
+               effect_key, operation, result, claim_token, claimant_id,
+               provider_invocation_count, metadata, occurred_at
+             )
+             SELECT effect_key, 'RECONCILE', 'CLOSED_NO_PROVIDER_EFFECT',
+                    NULL, NULL, 0,
+                    jsonb_build_object(
+                      'recovery_kind', $11::text,
+                      'activity_record_id', $12::text,
+                      'evidence_comment_id', $13::text,
+                      'evidence_comment_sha256', $14::text,
+                      'historical_claim_existence', 'VERIFIED',
+                      'historical_claim_identity', 'UNAVAILABLE',
+                      'gmail_sent_count', 0,
+                      'same_claim_preserved', false,
+                      'imported_legacy_history', true
+                    ),
+                    NOW()
+               FROM inserted_effect
+             RETURNING effect_key, event_id
+           ),
+           recovery_event AS (
+             INSERT INTO ${this.eventTableName} (
+               effect_key, operation, result, claim_token, claimant_id,
+               provider_invocation_count, metadata, occurred_at
+             )
+             SELECT inserted_effect.effect_key, 'CLAIM', 'LEGACY_ZERO_PROVIDER_RECOVERY_WON',
+                    $2::uuid, $3, 0,
+                    jsonb_build_object(
+                      'recovery_kind', $11::text,
+                      'terminal_result', 'CLOSED_NO_PROVIDER_EFFECT',
+                      'fresh_recovery_claim', true,
+                      'historical_claim_identity', 'UNAVAILABLE',
+                      'same_claim_preserved', false
+                    ),
+                    NOW()
+               FROM inserted_effect
+               JOIN historical_event USING (effect_key)
+             RETURNING effect_key, event_id
+           )
+           SELECT inserted_effect.*,
+                  historical_event.event_id::text AS historical_event_id,
+                  recovery_event.event_id::text AS recovery_event_id
+             FROM inserted_effect
+             JOIN historical_event USING (effect_key)
+             JOIN recovery_event USING (effect_key)`,
+          [
+            effectKey, claimToken, claimantId, payload.campaignId, payload.leadId,
+            payload.destination, payload.messageVersion, payload.sequenceStep,
+            payload.runtimeMode, payloadFingerprint, LEGACY_ZERO_PROVIDER_IMPORT_KIND,
+            recoveryAuthority.activityRecordId, recoveryAuthority.evidenceCommentId,
+            recoveryAuthority.evidenceCommentSha256
+          ]
+        );
+        if (imported.rowCount === 1) {
+          return {
+            result: "WON",
+            recovery: LEGACY_ZERO_PROVIDER_IMPORT_KIND,
+            record: imported.rows[0]
+          };
+        }
+        const current = await this.pool.query(
+          `SELECT effect_key, claim_token::text, claimant_id, state,
+                  provider_invocation_count, provider_payload_fingerprint
+             FROM ${this.tableName} WHERE effect_key=$1`,
+          [effectKey]
+        );
+        return { result: "EXISTS_HOLD", record: current.rows[0] ?? null };
+      }
 
       const recovered = await this.pool.query(
         `WITH eligible AS (

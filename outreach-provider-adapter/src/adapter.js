@@ -5,6 +5,34 @@ export class PreInvocationProviderError extends Error {}
 export class AmbiguousProviderResult extends Error {}
 export const ZERO_PROVIDER_RECOVERY_KIND = "CLOSED_NO_PROVIDER_EFFECT_ONCE";
 export const GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-001|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
+export const LEGACY_ZERO_PROVIDER_IMPORT_KIND = "LEGACY_CLOSED_NO_PROVIDER_EFFECT_IMPORT_ONCE";
+export const GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_EFFECT_KEY = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-001|FOLLOW-UP-ADAPTIVE-v1.1|FOLLOW-UP-1";
+export const GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID = "rechGpjbcwiw0DS0W";
+export const GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_ID = "comls28ZZQQS4fFCJ";
+export const GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_SHA256 = "e04082fc4a50113c5534598fcfb746d555f31e48882fb35cc40c7c175fd35db3";
+
+const LEGACY_ZERO_PROVIDER_IMPORT_AUTHORITY_KEYS = Object.freeze([
+  "activityRecordId",
+  "effectKey",
+  "evidenceCommentId",
+  "evidenceCommentSha256",
+  "gmailSentCount",
+  "historicalClaimExistence",
+  "historicalClaimIdentity",
+  "kind",
+  "providerInvocationCount",
+  "sameClaimPreserved"
+].sort());
+const LEGACY_ZERO_PROVIDER_IMPORT_EVIDENCE_KEYS = Object.freeze([
+  "activityRecordId",
+  "evidenceCommentId",
+  "evidenceCommentSha256",
+  "gmailSentCount",
+  "historicalClaimExistence",
+  "historicalClaimIdentity",
+  "providerInvocationCount",
+  "sameClaimPreserved"
+].sort());
 
 const REQUIRED_PAYLOAD_FIELDS = [
   "campaignId", "leadId", "messageVersion", "sequenceStep", "destination", "subject", "textBody",
@@ -23,6 +51,40 @@ export function isZeroProviderRecoveryAuthority(authority, { effectKey, sequence
     && effectKey === GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY
     && sequenceStep === "FOLLOW-UP-1"
     && runtimeMode === "zero-send";
+}
+
+export function isLegacyZeroProviderImportAuthority(authority, {
+  effectKey,
+  activityRecordId,
+  campaignId,
+  destination,
+  gmailThreadId,
+  leadId,
+  messageVersion,
+  sequenceStep,
+  runtimeMode
+}) {
+  if (!authority || typeof authority !== "object" || Array.isArray(authority)) return false;
+  if (Object.keys(authority).sort().join("|") !== LEGACY_ZERO_PROVIDER_IMPORT_AUTHORITY_KEYS.join("|")) return false;
+  return authority.kind === LEGACY_ZERO_PROVIDER_IMPORT_KIND
+    && authority.effectKey === GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_EFFECT_KEY
+    && authority.effectKey === effectKey
+    && authority.activityRecordId === GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID
+    && authority.activityRecordId === activityRecordId
+    && authority.evidenceCommentId === GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_ID
+    && authority.evidenceCommentSha256 === GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_SHA256
+    && authority.historicalClaimExistence === "VERIFIED"
+    && authority.historicalClaimIdentity === "UNAVAILABLE"
+    && authority.providerInvocationCount === 0
+    && authority.gmailSentCount === 0
+    && authority.sameClaimPreserved === false
+    && campaignId === "JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY"
+    && leadId === "LEAD-ANCHOR-20260819-001"
+    && destination === "info@motek.com"
+    && gmailThreadId === "1a0193666357e1f4"
+    && messageVersion === "FOLLOW-UP-ADAPTIVE-v1.1"
+    && sequenceStep === "FOLLOW-UP-1"
+    && runtimeMode === "manual";
 }
 
 function requireCanonicalPayload(payload, effectKey) {
@@ -62,7 +124,41 @@ function requireCanonicalExecutionBinding(binding, { payload, effectKey, recover
   if (!nonEmpty(binding.senderIdentity) || binding.senderIdentity !== payload.senderIdentitySnapshot) throw new FailClosedError("AUTHORITY_SENDER_MISMATCH");
   if (!nonEmpty(binding.correlationDomain) || binding.correlationDomain.endsWith(".invalid") || binding.correlationDomain === "outreach.invalid") throw new FailClosedError("APPROVED_CORRELATION_DOMAIN_REQUIRED");
   const recoveryRequested = recoveryAuthority !== undefined;
-  if (recoveryRequested && binding.recoveryKind !== ZERO_PROVIDER_RECOVERY_KIND) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_BINDING_REQUIRED");
+  const sameClaimRecovery = recoveryRequested && isZeroProviderRecoveryAuthority(recoveryAuthority, {
+    effectKey,
+    sequenceStep: payload.sequenceStep,
+    runtimeMode: payload.runtimeMode
+  });
+  const legacyImportRecovery = recoveryRequested && isLegacyZeroProviderImportAuthority(recoveryAuthority, {
+    effectKey,
+    activityRecordId: payload.airtableActivityRecordId,
+    campaignId: payload.campaignId,
+    destination: payload.destination,
+    gmailThreadId: payload.gmailThreadId,
+    leadId: payload.leadId,
+    messageVersion: payload.messageVersion,
+    sequenceStep: payload.sequenceStep,
+    runtimeMode: payload.runtimeMode
+  });
+  if (sameClaimRecovery && binding.recoveryKind !== ZERO_PROVIDER_RECOVERY_KIND) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_BINDING_REQUIRED");
+  if (legacyImportRecovery) {
+    if (binding.recoveryKind !== LEGACY_ZERO_PROVIDER_IMPORT_KIND) throw new FailClosedError("LEGACY_ZERO_PROVIDER_IMPORT_BINDING_REQUIRED");
+    const evidence = binding.recoveryEvidence;
+    if (!evidence
+      || typeof evidence !== "object"
+      || Array.isArray(evidence)
+      || Object.keys(evidence).sort().join("|") !== LEGACY_ZERO_PROVIDER_IMPORT_EVIDENCE_KEYS.join("|")
+      || evidence.activityRecordId !== recoveryAuthority.activityRecordId
+      || evidence.evidenceCommentId !== recoveryAuthority.evidenceCommentId
+      || evidence.evidenceCommentSha256 !== recoveryAuthority.evidenceCommentSha256
+      || evidence.historicalClaimExistence !== "VERIFIED"
+      || evidence.historicalClaimIdentity !== "UNAVAILABLE"
+      || evidence.providerInvocationCount !== 0
+      || evidence.gmailSentCount !== 0
+      || evidence.sameClaimPreserved !== false) {
+      throw new FailClosedError("LEGACY_ZERO_PROVIDER_IMPORT_EVIDENCE_REQUIRED");
+    }
+  }
   if (!recoveryRequested && binding.recoveryKind) throw new FailClosedError("UNREQUESTED_RECOVERY_BINDING_FORBIDDEN");
 }
 
@@ -85,11 +181,25 @@ export class GmailOutreachV2Adapter {
   async execute({ payload, effectKey, claimantId, claimToken, recoveryAuthority }) {
     requireCanonicalPayload(payload, effectKey);
     if (!claimantId || !claimToken) throw new FailClosedError("CLAIM_IDENTITY_REQUIRED");
-    if (recoveryAuthority !== undefined && !isZeroProviderRecoveryAuthority(recoveryAuthority, {
-      effectKey,
-      sequenceStep: payload.sequenceStep,
-      runtimeMode: payload.runtimeMode
-    })) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
+    if (recoveryAuthority !== undefined) {
+      const sameClaimRecovery = isZeroProviderRecoveryAuthority(recoveryAuthority, {
+        effectKey,
+        sequenceStep: payload.sequenceStep,
+        runtimeMode: payload.runtimeMode
+      });
+      const legacyImportRecovery = isLegacyZeroProviderImportAuthority(recoveryAuthority, {
+        effectKey,
+        activityRecordId: payload.airtableActivityRecordId,
+        campaignId: payload.campaignId,
+        destination: payload.destination,
+        gmailThreadId: payload.gmailThreadId,
+        leadId: payload.leadId,
+        messageVersion: payload.messageVersion,
+        sequenceStep: payload.sequenceStep,
+        runtimeMode: payload.runtimeMode
+      });
+      if (!sameClaimRecovery && !legacyImportRecovery) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
+    }
 
     const binding = await this.executionGate.readCurrent({ payload, effectKey, claimToken, claimantId, recoveryAuthority });
     requireCanonicalExecutionBinding(binding, { payload, effectKey, recoveryAuthority });

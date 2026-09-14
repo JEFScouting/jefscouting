@@ -3,8 +3,13 @@ import test from "node:test";
 import {
   AmbiguousProviderResult,
   FailClosedError,
+  GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID,
+  GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_ID,
+  GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_SHA256,
+  GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_EFFECT_KEY,
   GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY,
   GmailOutreachV2Adapter,
+  LEGACY_ZERO_PROVIDER_IMPORT_KIND,
   PreInvocationProviderError,
   ZERO_PROVIDER_RECOVERY_KIND,
   canonicalPayloadFingerprint,
@@ -89,6 +94,51 @@ const recoveryRequest = Object.freeze({
   claimToken,
   recoveryAuthority
 });
+const legacyImportPayload = Object.freeze({
+  ...recoveryPayload,
+  messageVersion:"FOLLOW-UP-ADAPTIVE-v1.1",
+  sequenceVersionSnapshot:"FOLLOW-UP-ADAPTIVE-v1.1",
+  templateVersionSnapshot:"FOLLOW-UP-ADAPTIVE-v1.1",
+  airtableActivityRecordId:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID,
+  runtimeMode:"manual"
+});
+const legacyImportAuthority = Object.freeze({
+  kind:LEGACY_ZERO_PROVIDER_IMPORT_KIND,
+  effectKey:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_EFFECT_KEY,
+  activityRecordId:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID,
+  evidenceCommentId:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_ID,
+  evidenceCommentSha256:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_SHA256,
+  historicalClaimExistence:"VERIFIED",
+  historicalClaimIdentity:"UNAVAILABLE",
+  providerInvocationCount:0,
+  gmailSentCount:0,
+  sameClaimPreserved:false
+});
+const legacyImportBinding = Object.freeze({
+  ...canonicalBinding,
+  effectKey:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_EFFECT_KEY,
+  payloadFingerprint:canonicalPayloadFingerprint(legacyImportPayload),
+  verifiedRecipient:legacyImportPayload.destination,
+  recoveryKind:LEGACY_ZERO_PROVIDER_IMPORT_KIND,
+  recoveryEvidence:Object.freeze({
+    activityRecordId:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID,
+    evidenceCommentId:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_ID,
+    evidenceCommentSha256:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_SHA256,
+    historicalClaimExistence:"VERIFIED",
+    historicalClaimIdentity:"UNAVAILABLE",
+    providerInvocationCount:0,
+    gmailSentCount:0,
+    sameClaimPreserved:false
+  }),
+  controls:{adapterBuildEnabled:true,execution:"ACTIVE",campaign:"ACTIVE",runtime:"HOLD",circuit:"HOLD"}
+});
+const legacyImportRequest = Object.freeze({
+  payload:legacyImportPayload,
+  effectKey:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_EFFECT_KEY,
+  claimantId:"fresh-recovery-worker",
+  claimToken:"55555555-5555-4555-8555-555555555555",
+  recoveryAuthority:legacyImportAuthority
+});
 
 test("confirmed send uses one durable claim store for ownership + provider attempt", async () => {
   const h = harness();
@@ -133,6 +183,37 @@ test("governed Motek recovery reaches only the existing claim and stops before p
   assert.equal(h.effects.claim, 1);
   assert.equal(h.effects.reserve, 0);
   assert.equal(h.effects.send, 0);
+});
+
+test("exact legacy import uses a fresh claim distinct from unavailable historical identity", async () => {
+  const h=harness({binding:legacyImportBinding,safety:false});
+  await assert.rejects(h.adapter.execute(legacyImportRequest),/PRE_PROVIDER_SAFETY_REVALIDATION_FAILED/);
+  assert.equal(h.claimArgs().claimToken,legacyImportRequest.claimToken);
+  assert.equal(h.claimArgs().claimantId,legacyImportRequest.claimantId);
+  assert.equal(h.claimArgs().recoveryAuthority.historicalClaimIdentity,"UNAVAILABLE");
+  assert.equal(h.claimArgs().recoveryAuthority.sameClaimPreserved,false);
+  assert.equal(h.effects.claim,1);
+  assert.equal(h.effects.reserve,0);
+  assert.equal(h.effects.send,0);
+});
+
+test("legacy import rejects missing evidence, wrong EffectKey and ordinary effects before claim", async () => {
+  const candidates=[
+    {request:{...legacyImportRequest,recoveryAuthority:{...legacyImportAuthority,evidenceCommentSha256:"0".repeat(64)}},binding:legacyImportBinding},
+    {request:{...legacyImportRequest,recoveryAuthority:{...legacyImportAuthority,sameClaimPreserved:true}},binding:legacyImportBinding},
+    {request:{...legacyImportRequest,recoveryAuthority:{...legacyImportAuthority,historicalClaimIdentity:"PRESERVED"}},binding:legacyImportBinding},
+    {request:{...legacyImportRequest,effectKey:"OUTREACH-SEND|campaign|lead|v1|FU1"},binding:legacyImportBinding},
+    {request:{...request,recoveryAuthority:legacyImportAuthority},binding:legacyImportBinding},
+    {request:legacyImportRequest,binding:{...legacyImportBinding,recoveryEvidence:undefined}},
+    {request:legacyImportRequest,binding:{...legacyImportBinding,recoveryEvidence:{...legacyImportBinding.recoveryEvidence,extra:"forbidden"}}}
+  ];
+  for(const candidate of candidates){
+    const h=harness({binding:candidate.binding});
+    await assert.rejects(h.adapter.execute(candidate.request),FailClosedError);
+    assert.equal(h.effects.claim,0);
+    assert.equal(h.effects.reserve,0);
+    assert.equal(h.effects.send,0);
+  }
 });
 
 test("recovery authority is explicit, exact-Motek-only and cannot be manufactured", async () => {

@@ -10,6 +10,7 @@ const motekEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAI
 const motekV11EffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-001|FOLLOW-UP-ADAPTIVE-v1.1|FOLLOW-UP-1";
 const otherEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-OTHER|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
 const recoveryKind = "CLOSED_NO_PROVIDER_EFFECT_ONCE";
+const legacyImportKind = "LEGACY_CLOSED_NO_PROVIDER_EFFECT_IMPORT_ONCE";
 const hughFailedEffectKey = "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-ANCHOR-20260819-002|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1";
 const contaminatedEffectKeys = Object.freeze([
   "OUTREACH-SEND|JEF-OUTREACH-V2-20260827-SOUTH-FLORIDA-DAILY|LEAD-20260810-CHATEAU-ZZS|FOLLOW-UP-ADAPTIVE-v1.0|FOLLOW-UP-1",
@@ -205,6 +206,24 @@ test("one-EffectKey canary authority is exact, Follow-Up-only, and zero-send-onl
       configuredEffectKey:blockedEffectKey
     }),false);
   }
+});
+
+test("legacy zero-provider import authority is exact v1.1 Activity-only and manual-only",async()=>{
+  const {hasExactLegacyZeroProviderImportAuthority}=await import(new URL(`../.runtime-build/slice01.mjs?legacy-authority=${Date.now()}`,import.meta.url));
+  const exact={operation:"EXECUTE_FOLLOW_UP",requestedRecoveryKind:legacyImportKind,suppliedEffectKey:motekV11EffectKey,activityRecordId:"rechGpjbcwiw0DS0W",messageVersion:"FOLLOW-UP-ADAPTIVE-v1.1",sequenceStep:"FOLLOW-UP-1",runtimeMode:"manual",sendEnabled:false};
+  assert.equal(hasExactLegacyZeroProviderImportAuthority(exact),true);
+  for(const changed of [
+    {...exact,operation:"EXECUTE_FIRST_TOUCH"},
+    {...exact,requestedRecoveryKind:recoveryKind},
+    {...exact,suppliedEffectKey:motekEffectKey},
+    {...exact,suppliedEffectKey:otherEffectKey},
+    {...exact,activityRecordId:"recsTFnxSZPkWrHFa"},
+    {...exact,messageVersion:"FOLLOW-UP-ADAPTIVE-v1.0"},
+    {...exact,sequenceStep:"FIRST-TOUCH"},
+    {...exact,runtimeMode:"zero-send"},
+    {...exact,runtimeMode:"production",sendEnabled:true},
+    {...exact,sendEnabled:true}
+  ]) assert.equal(hasExactLegacyZeroProviderImportAuthority(changed),false);
 });
 
 test("production config uses manual Follow-Up mode without a bespoke EffectKey binding", async () => {
@@ -410,7 +429,7 @@ test("one-shot Airtable diagnostic runner is internal, zero-send, and mutation-f
 });
 
 test("runtime binds Follow-Up Gmail thread and fresh mailbox reality before adapter execution", () => {
-  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.10-oauth-error-observability/);
+  assert.match(source, /JEF-OUTREACH-RUNTIME-v1\.1\.11-legacy-recovery-import/);
   assert.match(source, /JSON\.stringify\(threadId \? \{ raw, threadId \} : \{ raw \}\)/);
   assert.match(source, /async function freshMailboxReality\(payload: any\)/);
   assert.match(source, /message\.labelIds\.includes\("SENT"\)/);
@@ -419,4 +438,7 @@ test("runtime binds Follow-Up Gmail thread and fresh mailbox reality before adap
   assert.match(source, /op === "EXECUTE_FIRST_TOUCH" \|\| op === "EXECUTE_FOLLOW_UP"/);
   assert.match(source, /ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID/);
   assert.match(source, /ZERO_PROVIDER_RECOVERY_KIND/);
+  assert.match(source, /LEGACY_ZERO_PROVIDER_IMPORT_GMAIL_EVIDENCE_REQUIRED/);
+  assert.match(source, /gmailSentCount: null/);
+  assert.match(source, /gmailSentCount: 0/);
 });

@@ -1,7 +1,13 @@
+import { createHash } from "node:crypto";
 import {
   FailClosedError,
+  GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID,
+  GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_ID,
+  GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_SHA256,
+  LEGACY_ZERO_PROVIDER_IMPORT_KIND,
   ZERO_PROVIDER_RECOVERY_KIND,
   canonicalPayloadFingerprint,
+  isLegacyZeroProviderImportAuthority,
   isZeroProviderRecoveryAuthority
 } from "./adapter.js";
 
@@ -45,6 +51,50 @@ export class AirtableReadOnlyClient {
     if (body?.id!==recordId || !body?.fields) throw new FailClosedError("AIRTABLE_RECORD_IDENTITY_MISMATCH");
     return body;
   }
+  async getRecordComments(tableId, recordId) {
+    if (tableId !== JEF_AIRTABLE.tables.activity) throw new FailClosedError("AIRTABLE_COMMENT_TABLE_NOT_ALLOWLISTED");
+    requireRecordId(recordId, "EXACT");
+    const url=`https://api.airtable.com/v0/${this.baseId}/${tableId}/${recordId}/comments?pageSize=100`;
+    const response=await this.fetchImpl(url,{method:"GET",headers:{authorization:`Bearer ${this.token}`}});
+    if (!response?.ok) throw new FailClosedError(`AIRTABLE_COMMENT_READ_FAILED_${response?.status ?? "UNKNOWN"}`);
+    const body=await response.json();
+    if (!Array.isArray(body?.comments) || body.offset) throw new FailClosedError("AIRTABLE_COMMENT_EVIDENCE_INCOMPLETE");
+    return body.comments;
+  }
+}
+
+function classifyRecovery(recoveryAuthority, payload, effectKey) {
+  if (recoveryAuthority === undefined) return "none";
+  if (isZeroProviderRecoveryAuthority(recoveryAuthority, {
+    effectKey,
+    sequenceStep: payload.sequenceStep,
+    runtimeMode: payload.runtimeMode
+  })) return "same-claim";
+  if (isLegacyZeroProviderImportAuthority(recoveryAuthority, {
+    effectKey,
+    activityRecordId: payload.airtableActivityRecordId,
+    campaignId: payload.campaignId,
+    destination: payload.destination,
+    gmailThreadId: payload.gmailThreadId,
+    leadId: payload.leadId,
+    messageVersion: payload.messageVersion,
+    sequenceStep: payload.sequenceStep,
+    runtimeMode: payload.runtimeMode
+  })) return "legacy-import";
+  throw new FailClosedError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
+}
+
+function hasExactLegacyEvidence(comments) {
+  if (!Array.isArray(comments)) return false;
+  const matches=comments.filter((comment)=>comment?.id===GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_ID);
+  if (matches.length!==1) return false;
+  const comment=matches[0];
+  return comment.createdTime==="2026-09-11T00:18:10.000Z"
+    && (comment.lastUpdatedTime===null || comment.lastUpdatedTime===undefined)
+    && comment.author?.id==="usrSgISx4ipspMOlC"
+    && comment.author?.email==="jefscouting@gmail.com"
+    && typeof comment.text==="string"
+    && createHash("sha256").update(comment.text,"utf8").digest("hex")===GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_SHA256;
 }
 
 export class AirtableOutreachGates {
@@ -60,27 +110,25 @@ export class AirtableOutreachGates {
     if (payload.airtableCampaignRecordId!==this.campaignRecordId || payload.airtableCommandRecordId!==this.commandRecordId) throw new FailClosedError("PINNED_AUTHORITY_RECORD_MISMATCH");
   }
 
-  async readSnapshot(payload) {
+  async readSnapshot(payload, { includeActivityComments = false } = {}) {
     this.requireExactIds(payload);
     const T=JEF_AIRTABLE.tables;
-    const [activity,lead,campaign,command]=await Promise.all([
+    const [activity,lead,campaign,command,activityComments]=await Promise.all([
       this.client.getRecord(T.activity,payload.airtableActivityRecordId),
       this.client.getRecord(T.lead,payload.airtableLeadRecordId),
       this.client.getRecord(T.campaign,payload.airtableCampaignRecordId),
-      this.client.getRecord(T.command,payload.airtableCommandRecordId)
+      this.client.getRecord(T.command,payload.airtableCommandRecordId),
+      includeActivityComments ? this.client.getRecordComments(T.activity,payload.airtableActivityRecordId) : Promise.resolve(undefined)
     ]);
-    return {activity,lead,campaign,command};
+    return {activity,lead,campaign,command,activityComments};
   }
 
   evaluate({ payload, effectKey, claimToken, claimantId, recoveryAuthority, snapshot }) {
     const F=JEF_AIRTABLE.fields, a=snapshot.activity.fields, l=snapshot.lead.fields, c=snapshot.campaign.fields, cmd=snapshot.command.fields;
-    if (recoveryAuthority !== undefined && !isZeroProviderRecoveryAuthority(recoveryAuthority, {
-      effectKey,
-      sequenceStep: payload.sequenceStep,
-      runtimeMode: payload.runtimeMode
-    })) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
-    const recoveryRequested = recoveryAuthority !== undefined;
-    const manualFollowUp = !recoveryRequested && payload.runtimeMode === "manual" && payload.sequenceStep === "FOLLOW-UP-1";
+    const recoveryType=classifyRecovery(recoveryAuthority,payload,effectKey);
+    const recoveryRequested = recoveryType !== "none";
+    const legacyImportRecovery = recoveryType === "legacy-import";
+    const manualFollowUp = (!recoveryRequested || legacyImportRecovery) && payload.runtimeMode === "manual" && payload.sequenceStep === "FOLLOW-UP-1";
     const campaignActive = scalar(c[F.campaign.status]) === "Running";
     const runtimeActive = scalar(c[F.campaign.runtime]) === "Running";
     const circuitActive = scalar(c[F.campaign.circuit]) === "Healthy";
@@ -98,7 +146,7 @@ export class AirtableOutreachGates {
       scalar(l[F.lead.responsePriority])==="P4 — DUE FOLLOW-UP",
       scalar(l[F.lead.nextAction])==="FOLLOW_UP"
     ] : [false];
-    const effectStateAuthority = recoveryRequested ? [
+    const sameClaimEffectStateAuthority = [
       scalar(a[F.activity.state])==="RECONCILED",
       scalar(a[F.activity.contractGate])==="NO-OP — EFFECT EXISTS",
       scalar(a[F.activity.runtimeStatus])==="Reconciled",
@@ -111,7 +159,24 @@ export class AirtableOutreachGates {
       scalar(a[F.activity.claimant])===claimantId,
       Boolean(a[F.activity.claimedAt]),
       scalar(a[F.activity.claimGate])==="SEALED — CLAIM PRESERVED"
-    ] : [
+    ];
+    const legacyImportEffectStateAuthority = [
+      payload.airtableActivityRecordId===GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID,
+      scalar(a[F.activity.state])==="FAILED",
+      scalar(a[F.activity.contractGate])==="HOLD — EFFECT NOT READY",
+      scalar(a[F.activity.runtimeStatus])==="Failed",
+      Number(a[F.activity.attemptCount])===0,
+      !scalar(a[F.activity.reconciledAt]),
+      !scalar(a[F.activity.providerMessageId]),
+      !scalar(a[F.activity.reconciliationResult]),
+      scalar(a[F.activity.providerGate])==="HOLD — FAILURE; MANUAL RECONCILIATION REQUIRED",
+      !scalar(a[F.activity.claimToken]),
+      !scalar(a[F.activity.claimant]),
+      !scalar(a[F.activity.claimedAt]),
+      scalar(a[F.activity.claimGate])==="HOLD — EXECUTION STATE WITHOUT CLAIM",
+      hasExactLegacyEvidence(snapshot.activityComments)
+    ];
+    const effectStateAuthority = recoveryType === "same-claim" ? sameClaimEffectStateAuthority : legacyImportRecovery ? legacyImportEffectStateAuthority : [
       scalar(a[F.activity.state])==="READY",
       scalar(a[F.activity.contractGate])==="PASS — EFFECT READY"
     ];
@@ -138,14 +203,29 @@ export class AirtableOutreachGates {
       scalar(c[F.campaign.id])===payload.campaignId, ...campaignAndCommandAuthority
     ];
     const decision=authority.every(Boolean)&&controls.execution==="ACTIVE"?"AUTHORIZED":"HOLD";
-    return {decision,commandId:scalar(cmd[F.command.id])||"",releaseId:snapshot.campaign.id,authorityVersion:scalar(c[F.campaign.engineVersion])||"",effectKey,payloadFingerprint:canonicalPayloadFingerprint(payload),verifiedRecipient:scalar(a[F.activity.recipient])||"",senderIdentity:scalar(a[F.activity.sender])||"",correlationDomain:this.correlationDomain,controls,recoveryKind:recoveryRequested?ZERO_PROVIDER_RECOVERY_KIND:null};
+    const recoveryEvidence=legacyImportRecovery?Object.freeze({
+      activityRecordId:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID,
+      evidenceCommentId:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_ID,
+      evidenceCommentSha256:GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_SHA256,
+      historicalClaimExistence:"VERIFIED",
+      historicalClaimIdentity:"UNAVAILABLE",
+      providerInvocationCount:0,
+      gmailSentCount:0,
+      sameClaimPreserved:false
+    }):undefined;
+    const recoveryKind=recoveryType==="same-claim"?ZERO_PROVIDER_RECOVERY_KIND:legacyImportRecovery?LEGACY_ZERO_PROVIDER_IMPORT_KIND:null;
+    return {decision,commandId:scalar(cmd[F.command.id])||"",releaseId:snapshot.campaign.id,authorityVersion:scalar(c[F.campaign.engineVersion])||"",effectKey,payloadFingerprint:canonicalPayloadFingerprint(payload),verifiedRecipient:scalar(a[F.activity.recipient])||"",senderIdentity:scalar(a[F.activity.sender])||"",correlationDomain:this.correlationDomain,controls,recoveryKind,recoveryEvidence};
   }
 
-  async readCurrent({payload,effectKey,claimToken,claimantId,recoveryAuthority}) { return this.evaluate({payload,effectKey,claimToken,claimantId,recoveryAuthority,snapshot:await this.readSnapshot(payload)}); }
+  async readCurrent({payload,effectKey,claimToken,claimantId,recoveryAuthority}) {
+    const recoveryType=classifyRecovery(recoveryAuthority,payload,effectKey);
+    return this.evaluate({payload,effectKey,claimToken,claimantId,recoveryAuthority,snapshot:await this.readSnapshot(payload,{includeActivityComments:recoveryType==="legacy-import"})});
+  }
 
   async revalidate({payload,effectKey,claimToken,claimantId,payloadFingerprint,recoveryAuthority}) {
     if (payloadFingerprint!==canonicalPayloadFingerprint(payload)) throw new FailClosedError("SAFETY_PAYLOAD_FINGERPRINT_MISMATCH");
-    const snapshot=await this.readSnapshot(payload);
+    const recoveryType=classifyRecovery(recoveryAuthority,payload,effectKey);
+    const snapshot=await this.readSnapshot(payload,{includeActivityComments:recoveryType==="legacy-import"});
     const binding=this.evaluate({payload,effectKey,claimToken,claimantId,recoveryAuthority,snapshot});
     const suppressionIds=links(snapshot.lead.fields[JEF_AIRTABLE.fields.lead.suppressionRecords]);
     const suppressions=await Promise.all(suppressionIds.map((id)=>this.client.getRecord(JEF_AIRTABLE.tables.suppression,id)));

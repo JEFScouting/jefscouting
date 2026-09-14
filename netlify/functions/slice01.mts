@@ -2,14 +2,19 @@ import { neon, Pool } from "@neondatabase/serverless";
 import {
   GmailOutreachV2Adapter,
   FailClosedError,
+  GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID,
+  GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_ID,
+  GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_SHA256,
+  GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_EFFECT_KEY,
   GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY,
+  LEGACY_ZERO_PROVIDER_IMPORT_KIND,
   ZERO_PROVIDER_RECOVERY_KIND
 } from "../../outreach-provider-adapter/src/adapter.js";
 import { AirtableOutreachGates, AirtableReadOnlyClient, JEF_AIRTABLE } from "../../outreach-provider-adapter/src/airtable-gates.js";
 import { GmailApiProvider } from "../../outreach-provider-adapter/src/gmail-provider.js";
 import { PostgresClaimStore } from "../../outreach-provider-adapter/src/postgres-claim-store.js";
 
-const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.10-oauth-error-observability";
+const VERSION = "JEF-OUTREACH-RUNTIME-v1.1.11-legacy-recovery-import";
 const EFFECT_PREFIX = "OUTREACH-SEND";
 const REQUIRED_GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
@@ -131,6 +136,35 @@ export function hasExactZeroProviderRecoveryAuthority({
     && suppliedEffectKey === GOVERNED_ZERO_PROVIDER_RECOVERY_EFFECT_KEY
     && sequenceStep === "FOLLOW-UP-1"
     && runtimeMode === "zero-send"
+    && sendEnabled === false;
+}
+
+export function hasExactLegacyZeroProviderImportAuthority({
+  operation,
+  requestedRecoveryKind,
+  suppliedEffectKey,
+  activityRecordId,
+  messageVersion,
+  sequenceStep,
+  runtimeMode,
+  sendEnabled,
+}: {
+  operation: unknown;
+  requestedRecoveryKind: unknown;
+  suppliedEffectKey: unknown;
+  activityRecordId: unknown;
+  messageVersion: unknown;
+  sequenceStep: unknown;
+  runtimeMode: unknown;
+  sendEnabled: unknown;
+}) {
+  return operation === "EXECUTE_FOLLOW_UP"
+    && requestedRecoveryKind === LEGACY_ZERO_PROVIDER_IMPORT_KIND
+    && suppliedEffectKey === GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_EFFECT_KEY
+    && activityRecordId === GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID
+    && messageVersion === "FOLLOW-UP-ADAPTIVE-v1.1"
+    && sequenceStep === "FOLLOW-UP-1"
+    && runtimeMode === "manual"
     && sendEnabled === false;
 }
 
@@ -408,7 +442,7 @@ function canonicalGmailTransport(authorizedSenderIdentity: string) {
   };
 }
 
-async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtimeMode: string, sendEnabled: boolean, boundedCanaryAuthorized: boolean, manualFollowUpAuthorized: boolean, recoveryAuthority?: { kind: string; effectKey: string }) {
+async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtimeMode: string, sendEnabled: boolean, boundedCanaryAuthorized: boolean, manualFollowUpAuthorized: boolean, recoveryAuthority?: Record<string, unknown>) {
   const productionTransmissionAuthorized = runtimeMode === "production" && sendEnabled;
   if (!productionTransmissionAuthorized && !boundedCanaryAuthorized && !manualFollowUpAuthorized) {
     return json(409, { ok: false, error: "PRODUCTION_TRANSMISSION_DISABLED", provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
@@ -430,6 +464,12 @@ async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtim
     if (!reality.clear) {
       return json(200, { ok: true, result: "NO_OP_STALE_MAILBOX", stale_reason: reality.reason, mailbox_evidence_count: reality.evidenceCount ?? null, provider_send_called: false, provider_call_count: 0, automatic_retry: false, version: VERSION });
     }
+    if (recoveryAuthority?.kind === LEGACY_ZERO_PROVIDER_IMPORT_KIND && reality.reason !== "FRESH_FOLLOW_UP_CLEAR") {
+      throw new FailClosedError("LEGACY_ZERO_PROVIDER_IMPORT_GMAIL_EVIDENCE_REQUIRED");
+    }
+    const verifiedRecoveryAuthority = recoveryAuthority?.kind === LEGACY_ZERO_PROVIDER_IMPORT_KIND
+      ? Object.freeze({ ...recoveryAuthority, gmailSentCount: 0 })
+      : recoveryAuthority;
     const gmail = canonicalGmailTransport(payload.senderIdentitySnapshot);
     const adapter = new GmailOutreachV2Adapter({
       claimStore: new PostgresClaimStore({ pool }),
@@ -438,7 +478,7 @@ async function executeCanonicalFirstTouch(args: any, databaseUrl: string, runtim
       gmailProvider: new GmailApiProvider({ transport: gmail.transport, from: gmail.sender }),
       controls: { adapterBuildEnabled: true },
     });
-    const result = await adapter.execute({ payload, effectKey: args.effect_key, claimantId: args.claimant_id, claimToken: args.claim_token, recoveryAuthority });
+    const result = await adapter.execute({ payload, effectKey: args.effect_key, claimantId: args.claimant_id, claimToken: args.claim_token, recoveryAuthority: verifiedRecoveryAuthority });
     return json(200, { ok: true, ...result, provider_send_called: result.result === "CONFIRMED", provider_call_count: result.result === "CONFIRMED" || result.result === "UNKNOWN_HOLD" ? 1 : 0, automatic_retry: false, version: VERSION });
   } finally {
     await pool.end();
@@ -596,9 +636,32 @@ export default async (req: Request) => {
         runtimeMode,
         sendEnabled,
       });
-      if (recoveryKindProvided && !recoveryAuthorized) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
+      const legacyImportAuthorized = hasExactLegacyZeroProviderImportAuthority({
+        operation: op,
+        requestedRecoveryKind: args.recovery_kind,
+        suppliedEffectKey: args.effect_key,
+        activityRecordId: args.payload?.airtableActivityRecordId,
+        messageVersion: args.payload?.messageVersion,
+        sequenceStep: args.payload?.sequenceStep,
+        runtimeMode,
+        sendEnabled,
+      });
+      if (recoveryKindProvided && !recoveryAuthorized && !legacyImportAuthorized) throw new FailClosedError("ZERO_PROVIDER_RECOVERY_AUTHORITY_INVALID");
       const recoveryAuthority = recoveryAuthorized
         ? Object.freeze({ kind: ZERO_PROVIDER_RECOVERY_KIND, effectKey: String(args.effect_key) })
+        : legacyImportAuthorized
+          ? Object.freeze({
+              kind: LEGACY_ZERO_PROVIDER_IMPORT_KIND,
+              effectKey: GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_EFFECT_KEY,
+              activityRecordId: GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_ACTIVITY_ID,
+              evidenceCommentId: GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_ID,
+              evidenceCommentSha256: GOVERNED_LEGACY_ZERO_PROVIDER_IMPORT_COMMENT_SHA256,
+              historicalClaimExistence: "VERIFIED",
+              historicalClaimIdentity: "UNAVAILABLE",
+              providerInvocationCount: 0,
+              gmailSentCount: null,
+              sameClaimPreserved: false,
+            })
         : undefined;
       return await executeCanonicalFirstTouch(args, databaseUrl, runtimeMode, sendEnabled, boundedCanaryAuthorized, manualFollowUpAuthorized, recoveryAuthority);
     } catch (error: any) {

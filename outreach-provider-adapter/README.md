@@ -29,6 +29,12 @@ The claim store then performs one atomic PostgreSQL statement. It requires the s
 
 Provider-count-one, `UNKNOWN_HOLD`, `ACCEPTED`, `RECONCILED_FOUND`, reservation/send history, malformed authority, and every other EffectKey remain ineligible.
 
+## Exact legacy split-ledger import
+
+`LEGACY_CLOSED_NO_PROVIDER_EFFECT_IMPORT_ONCE` is a separate, source-pinned exception for Motek Activity `rechGpjbcwiw0DS0W` and its existing `FOLLOW-UP-ADAPTIVE-v1.1` EffectKey. It is not a retry mode. The runtime accepts it only for manual `EXECUTE_FOLLOW_UP` with global send disabled, after fresh Gmail thread reality proves that no later outbound Follow-Up or human reply exists. Airtable must independently show the exact failed, zero-attempt, no-provider, no-current-claim state and the exact immutable historical evidence comment by ID, author, timestamp, and SHA-256.
+
+When—and only when—Neon has neither an Effect nor event history for that key, one atomic PostgreSQL statement inserts the Effect as `CLAIMED` under the caller's fresh recovery claim. Before that claim event, it appends an imported `RECONCILE/CLOSED_NO_PROVIDER_EFFECT` event whose claim token and claimant are null and whose metadata says `historical_claim_existence=VERIFIED`, `historical_claim_identity=UNAVAILABLE`, and `same_claim_preserved=false`. It then appends `CLAIM/LEGACY_ZERO_PROVIDER_RECOVERY_WON` with the new claim identity. Conflict, replay, any prior Effect/event, provider identity, provider reservation, provider count, missing/tampered evidence, wrong Activity, or wrong EffectKey fails closed. The normal one-reservation provider fence and no-retry/`UNKNOWN_HOLD` behavior remain unchanged.
+
 ## Provider-attempt reservation proof
 
 `PostgresClaimStore.claim` uses `INSERT … ON CONFLICT DO NOTHING` against the unique EffectKey. `reserveProviderAttempt` uses one atomic conditional `UPDATE` on the same durable Effect row. The transition is permitted only when the exact `effect_key` and `claim_token` match, the Effect is `CLAIMED`, and `provider_invocation_count = 0`; it advances to `INVOCATION_STARTED`. A concurrent loser or replay receives `EXISTS_HOLD`. Confirm, `UNKNOWN_HOLD`, non-retry failure and reconciliation are fenced by the same EffectKey, claim token, deterministic payload fingerprint and provider correlation identity.
@@ -43,6 +49,7 @@ CI now watches `netlify/functions/**`, the root runtime manifest, Netlify config
 - zero-send mode rejects First-Touch before Airtable, Postgres or Gmail;
 - direct `SEND_PROVIDER` cannot invoke Gmail;
 - zero-provider terminal recovery is exact-Motek-only, same-claim, atomic and one-shot;
+- legacy v1.1 recovery imports null-identity historical evidence and mints one distinguishable fresh claim only;
 - only `SELF_CANARY_SEND` reaches the contained send composition;
 - self-canary destination must equal the configured sender.
 
