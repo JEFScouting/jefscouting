@@ -1,0 +1,31 @@
+name: Content Release dual-read UAT
+
+on:
+  pull_request:
+    paths:
+      - "eng-content-release/**"
+      - "test/eng-content-release-dual-read.test.mjs"
+      - "test/fixtures/content-release-sanitized-fixtures.json"
+      - ".github/workflows/content-release-dual-read.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zero-effect-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify dual-read behavior
+        run: node --test test/eng-content-release-dual-read.test.mjs
+      - name: Verify no provider or deployment surface exists
+        shell: bash
+        run: |
+          test ! -f eng-content-release/netlify.toml
+          test ! -f eng-content-release/package.json
+          ! grep -R -E "fetch\(|axios|planable|provider\.send|publish\(" eng-content-release/dual-read-adapter.mjs
