@@ -1,0 +1,33 @@
+{
+  "name": "jefscouting",
+  "version": "1.0.0",
+  "description": "Governed bilingual landing foundation for JEF Scouting.",
+  "scripts": {
+    "test": "node --test tests/intake/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "build:intake": "node scripts/build-intake-scripts.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JEFScouting/jefscouting.git"
+  },
+  "keywords": [],
+  "author": "",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/JEFScouting/jefscouting/issues"
+  },
+  "homepage": "https://github.com/JEFScouting/jefscouting#readme",
+  "dependencies": {
+    "@netlify/blobs": "^11.1.1",
+    "@netlify/functions": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.18"
+  }
+}
