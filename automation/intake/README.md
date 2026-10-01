@@ -6,6 +6,8 @@ Checkpoint 2026-10-01: PR #31 is merged as `f3561f71530336a7376fb3a3da8ade990589
 
 A temporary `provider-check` build hook makes only authenticated GET requests using the credentials already scoped to this Netlify project. It reports webhook classifications/fingerprints, question IDs/types, recent submission IDs/times, and redacted adapter status in the existing deploy summary. It creates no route, credential, submission or record; it never returns source answers, private webhook URLs, or credentials. It is limited to this production project and expires 2026-10-03 UTC. Remove its `netlify.toml` registration after the release readback; this is a bounded diagnostic, not a second intake path.
 
+Because the Netlify connector does not return plugin report details, that same sanitized report also has an RSA-OAEP-SHA256 + AES-256-GCM encrypted build artifact. Only the public encryption key is committed; the private key stays outside this repository. Remove the temporary build hook and artifact after readback. This follows the prior bounded encrypted provider-readback pattern without reviving its retired public runtime endpoint.
+
 ## Existing assets and observed defects
 
 The canonical base is `appveHEw1HrXr8nD1`. This repair continues `JEFScouting/jefscouting`, the existing `candidate-jotform-webhook` branch, the existing Netlify project, the two existing function routes, the two existing native Airtable automations, and the original forms. No base, table, form or alternate CRM is created.
