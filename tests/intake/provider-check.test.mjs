@@ -29,7 +29,7 @@ test('provider check makes GETs only and never returns secrets, webhook URLs or 
     return Response.json({ responseCode: 200, content: [{ id: '9000000000000000001', created_at: '2026-10-01 09:30:00', status: 'ACTIVE', answers: { email: 'private@example.invalid' } }] });
   };
   const result = await plugin.checkProvider({ env, now, fetchImpl });
-  assert.equal(calls.length, 8);
+  assert.equal(calls.length, 10);
   assert.equal(result.forms.candidate.webhooks.destinations[0].kind, 'EXISTING_CANONICAL_ADAPTER');
   assert.equal(result.forms.client.webhooks.destinations[1].kind, 'DIRECT_AIRTABLE');
   assert.equal(result.forms.client.adapter.counts.done, 2);

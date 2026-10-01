@@ -8,7 +8,7 @@ const SITE = '0b736ac6-14f3-4766-9ed4-15561e64d17e';
 const EXPIRES = Date.parse('2026-10-03T00:00:00Z');
 const FORMS = { candidate: '261480775333056', client: '262081932367056' };
 
-async function checkProvider({ env, fetchImpl, now }) {
+async function checkProvider({ env, fetchImpl, now, capturePrivate = () => {} }) {
   if (env.SITE_ID !== SITE || env.CONTEXT !== 'production' || now >= EXPIRES) return { mode: 'SKIPPED_OUTSIDE_BOUNDED_PRODUCTION_CHECK' };
   if (!env.JOTFORM_API_KEY) return { mode: 'READ_ONLY', error: 'PROVIDER_KEY_UNAVAILABLE' };
   const get = async path => {
@@ -24,10 +24,11 @@ async function checkProvider({ env, fetchImpl, now }) {
   };
   const report = { mode: 'READ_ONLY', observedAt: new Date(now).toISOString(), forms: {} };
   for (const [lane, formId] of Object.entries(FORMS)) {
-    const [hooks, questions, submissions] = await Promise.all([
+    const [hooks, questions, submissions, properties] = await Promise.all([
       get('/form/' + formId + '/webhooks'),
       get('/form/' + formId + '/questions'),
       get('/form/' + formId + '/submissions?limit=3&orderby=created_at'),
+      get('/form/' + formId + '/properties'),
     ]);
     const expectedPath = '/api/' + lane + '-jotform-webhook';
     const hookReport = hooks.error ? { error: hooks.error } : {
@@ -37,7 +38,7 @@ async function checkProvider({ env, fetchImpl, now }) {
         if (typeof value !== 'string') return { kind: 'UNEXPECTED_PROVIDER_SHAPE' };
         try {
           const u = new URL(value);
-          const exact = u.protocol === 'https:' && u.hostname === 'jefscouting.com' && u.pathname === expectedPath && !u.search && !u.hash;
+          const exact = u.protocol === 'https:' && ['jefscouting.com', 'jefscouting.netlify.app'].includes(u.hostname) && u.pathname === expectedPath && !u.search && !u.hash;
           return {
             kind: exact ? 'EXISTING_CANONICAL_ADAPTER' : u.hostname === 'hooks.airtable.com' ? 'DIRECT_AIRTABLE' : 'OTHER_DESTINATION',
             fingerprint: createHash('sha256').update(value).digest('hex'),
@@ -74,7 +75,11 @@ async function checkProvider({ env, fetchImpl, now }) {
         }
       } catch { adapter = { error: 'ADAPTER_STATUS_READ_FAILED' }; }
     }
-    report.forms[lane] = { formId, webhooks: hookReport, questions: questionReport, submissions: submissionReport, adapter };
+    const propertyKeys = properties.error ? [] : Object.keys(properties.content || {}).filter(k => /integrat|webhook|email|notif|timezone/i.test(k));
+    const selectedProperties = Object.fromEntries(propertyKeys.map(k => [k, properties.content[k]]));
+    // These settings are encrypted only, never included in logs/deploy summary.
+    capturePrivate(lane, { webhooks: hooks.error ? null : hooks.content, properties: selectedProperties });
+    report.forms[lane] = { formId, webhooks: hookReport, questions: questionReport, submissions: submissionReport, properties: properties.error ? { error: properties.error } : { relevantKeys: propertyKeys }, adapter };
   }
   return report;
 }

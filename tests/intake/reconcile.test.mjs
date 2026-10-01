@@ -45,3 +45,8 @@ test('unverified hidden Lead ID cannot create an account or relationship',async(
 });
 
 test('Conversational remains the exact reported English level',async()=>{const b=new FakeBase();const r=await reconcile(env('candidate','9000000000000000001',{14:'Conversational'}),b);assert.equal(r.status,'done');assert.equal(first(b,'candidates')['English Level'].name,'Conversational');});
+
+test('historical phone formatting normalizes without a false canonical conflict',async()=>{
+ const b=new FakeBase();b.seed('candidates',{Candidate:'[JEF INTAKE QA] Alex Rivera',Email:'qa.alex@example.invalid',Phone:'(202) 555-0101','Object ID':'TEST-OLD'});
+ const r=await reconcile(env(),b);assert.equal(r.status,'done');assert.equal(b.data.candidates.size,1);assert.equal(first(b,'candidates').Phone,'+12025550101');
+});

@@ -326,7 +326,10 @@ async function reconcile(envelope, base) {
     for(const [f,v] of Object.entries(proposed)) {
       if(!nonempty(v)) continue;
       const current=get(r,t,f), observed=comparable(current), incoming=comparable(v);
-      if(!nonempty(current)||stable(observed)===stable(incoming)||stable(observed)===stable(comparable(prior[f]))) {
+      // Formatting an already matching phone number is deterministic. Different
+      // punctuation/country-prefix formatting must not create Owner work.
+      const samePhone=f==='Phone'&&phone(current)&&phone(current)===phone(v);
+      if(!nonempty(current)||samePhone||stable(observed)===stable(incoming)||stable(observed)===stable(comparable(prior[f]))) {
         if(stable(observed)!==stable(incoming)) patch[f]=v;
         managed[f]=v;
       } else issues.push('CANONICAL_CONFLICT:'+f);
