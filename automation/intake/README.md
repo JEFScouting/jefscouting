@@ -2,6 +2,10 @@
 
 Status: IMPLEMENTED IN CODE; LIVE END-TO-END CERTIFICATION PENDING. This is not a closure report. Local test success is not evidence that either live Jotform integration delivered a canonical record.
 
+Checkpoint 2026-10-01: PR #31 is merged as `f3561f71530336a7376fb3a3da8ade9905898ae3`, production deploy `6ab9c5ecc97ade0008ea2884` is ready, and both existing Airtable drafts contain the exact generated scripts with dynamic receiptId/token inputs and captured trigger schemas. Candidate is still OFF; Client's original graph is still published. Both V2 flags remain disabled. Connected Jotform reads confirm both forms are enabled (225 Candidate / 1 Client submissions) and provide real submission field IDs/answers. Browser Google SSO failure is not a provider/API outage.
+
+A temporary `provider-check` build hook makes only authenticated GET requests using the credentials already scoped to this Netlify project. It reports webhook classifications/fingerprints, question IDs/types, recent submission IDs/times, and redacted adapter status in the existing deploy summary. It creates no route, credential, submission or record; it never returns source answers, private webhook URLs, or credentials. It is limited to this production project and expires 2026-10-03 UTC. Remove its `netlify.toml` registration after the release readback; this is a bounded diagnostic, not a second intake path.
+
 ## Existing assets and observed defects
 
 The canonical base is `appveHEw1HrXr8nD1`. This repair continues `JEFScouting/jefscouting`, the existing `candidate-jotform-webhook` branch, the existing Netlify project, the two existing function routes, the two existing native Airtable automations, and the original forms. No base, table, form or alternate CRM is created.
