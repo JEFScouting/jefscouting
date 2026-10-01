@@ -8,6 +8,8 @@ A temporary `provider-check` build hook makes only authenticated GET requests us
 
 Because the Netlify connector does not return plugin report details, that same sanitized report also has an RSA-OAEP-SHA256 + AES-256-GCM encrypted build artifact. Only the public encryption key is committed; the private key stays outside this repository. Remove the temporary build hook and artifact after readback. This follows the prior bounded encrypted provider-readback pattern without reviving its retired public runtime endpoint.
 
+Authenticated provider readback at 2026-10-01T13:26:52Z found zero Candidate webhooks and one Client webhook. The Client destination fingerprint exactly matches `https://jefscouting.netlify.app/api/client-jotform-webhook`, the existing project hostname and route; retain it. Authenticated status GETs on both existing adapters returned 200, idle, with zero V2 receipts. This proves provider/admin API access works without browser SSO; it does not prove a delivered intake. The latest Candidate source ID was `6664250389491600909` (2026-09-28). Native-script release additionally corrects a real-source dry-run finding: equivalent historical phone formatting must normalize without a false canonical-data conflict.
+
 ## Existing assets and observed defects
 
 The canonical base is `appveHEw1HrXr8nD1`. This repair continues `JEFScouting/jefscouting`, the existing `candidate-jotform-webhook` branch, the existing Netlify project, the two existing function routes, the two existing native Airtable automations, and the original forms. No base, table, form or alternate CRM is created.
