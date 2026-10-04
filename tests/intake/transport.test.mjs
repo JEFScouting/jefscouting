@@ -55,3 +55,17 @@ test('authenticated retry cannot steal a claimed writer',async()=>{
 test('malformed JSON is reported as invalid input',async()=>{
  const x=setup();const r=await handleIntake(new Request('https://jefscouting.com/api/candidate-jotform-webhook',{method:'POST',headers:{'content-type':'application/json'},body:'{' }),'candidate',x.deps);assert.equal(r.status,400);
 });
+
+for(const lane of ['candidate','client'])test(lane+' cutover pause durably queues repeated delivery and resumes once after human activation',async()=>{
+ const x=setup(lane);x.config[`JEF_${lane.toUpperCase()}_INTAKE_DISPATCH_PAUSED`]='true';
+ for(let i=0;i<2;i++){const r=await x.deliver();assert.equal(r.status,202);assert.equal((await r.json()).status,'queued_pending_activation');}
+ assert.equal(x.sent.length,0);assert.equal(x.records.data.evidence.size,0);
+ const inspect=await handleIntake(new Request('https://jefscouting.com/api/'+lane+'-jotform-webhook',{headers:{authorization:'Bearer test-admin-key'}}),lane,x.deps);
+ const status=await inspect.json();assert.equal(status.dispatchPaused,true);assert.equal(status.counts.queued,1);
+ assert.ok(x.logs.some(v=>v.status==='queued_pending_activation'));
+ delete x.config[`JEF_${lane.toUpperCase()}_INTAKE_DISPATCH_PAUSED`];
+ const retry=await handleIntake(new Request('https://jefscouting.com/api/'+lane+'-jotform-webhook',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer test-admin-key'},body:JSON.stringify({action:'retry',receiptId:status.attention[0].receiptId})}),lane,x.deps);
+ assert.equal(retry.status,202);assert.equal(x.sent.length,1);assert.equal((await x.consume()).status,'done');
+ assert.equal((await x.deliver()).status,200);assert.equal(x.sent.length,1);
+ assert.equal(x.records.data[lane==='candidate'?'candidates':'clients'].size,1);
+});

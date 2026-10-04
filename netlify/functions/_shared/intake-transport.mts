@@ -29,6 +29,7 @@ async function cas(store: Store, key: string, data: any, previous?: any) {
 export async function handleIntake(req: Request, lane: Lane, deps: Dependencies): Promise<Response> {
   const { store, env, log, now } = deps;
   const laneKey = `lane/${lane}`;
+  const dispatchPaused = () => env(`JEF_${lane.toUpperCase()}_INTAKE_DISPATCH_PAUSED`) === 'true';
   const validReceipt = (v: unknown) => typeof v === 'string' && new RegExp(`^receipt/${lane}/[0-9]{16,22}/[a-f0-9]{64}$`).test(v);
   const authorized = () => !!env('JOTFORM_ADMIN_SECRET') && equal(req.headers.get('authorization'), `Bearer ${env('JOTFORM_ADMIN_SECRET')}`);
   const webhook = () => {
@@ -57,6 +58,13 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
   // Completion dispatches the next receipt without an Owner execution cycle.
   const dispatch = async (preferred = '') => {
     const hook = webhook();
+    // The existing durable queue bridges human review of the native draft.
+    // Intake remains recoverable while neither old nor new actions are invoked.
+    // Already claimed writers can still acknowledge their completion.
+    if (dispatchPaused()) {
+      log({ lane, receiptId: preferred, status: 'queued_pending_activation' });
+      return 'queued_pending_activation';
+    }
     let slot = await read(store, laneKey);
     if (!slot) { await cas(store, laneKey, { state: 'idle' }); slot = await read(store, laneKey); }
     if (!slot) throw new Error('SLOT_UNAVAILABLE');
@@ -105,6 +113,8 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
       if (selected && !validReceipt(selected)) return response(400, { error: 'INVALID_RECEIPT_ID' });
       return response(200, {
         lane, state: slot?.data?.state || 'idle',
+        enabled: env(`JEF_${lane.toUpperCase()}_INTAKE_V2_ENABLED`) === 'true',
+        dispatchPaused: dispatchPaused(),
         active: slot?.data?.state === 'active' ? inspect(slot.data.receiptId, await read(store, slot.data.receiptId)) : null,
         last: slot?.data?.lastReceiptId ? inspect(slot.data.lastReceiptId, await read(store, slot.data.lastReceiptId)) : null,
         receipt: selected ? inspect(selected, await read(store, selected)) : null,
