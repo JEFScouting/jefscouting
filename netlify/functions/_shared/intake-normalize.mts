@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 export type Lane = 'candidate' | 'client';
 export const FORMS = { candidate: '261480775333056', client: '262081932367056' };
+export const REPRESENTATION_FORM = '261558428456063';
 export function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : typeof value === 'number' ? String(value) : '';
 }
@@ -35,7 +36,8 @@ function address(value: any, areaOnly = false): string {
 // Only provider-fetched answers are consumed here; never trust answers supplied by the caller.
 export function normalizeSubmission(lane: Lane, source: any, receivedAt: string) {
   if (typeof source?.id !== 'string' || !/^\d{16,22}$/.test(source.id)) throw new Error('INVALID_PROVIDER_SUBMISSION_ID');
-  if (String(source.form_id) !== FORMS[lane] || source.status !== 'ACTIVE') throw new Error('PROVIDER_FORM_OR_STATUS_MISMATCH');
+  const agreement = lane === 'candidate' && String(source.form_id) === REPRESENTATION_FORM;
+  if ((!agreement && String(source.form_id) !== FORMS[lane]) || source.status !== 'ACTIVE') throw new Error('PROVIDER_FORM_OR_STATUS_MISMATCH');
   if (!source.answers || typeof source.answers !== 'object' || Array.isArray(source.answers)) throw new Error('INVALID_PROVIDER_ANSWERS');
   const answers: Record<string, any> = {};
   for (const [qid, question] of Object.entries<any>(source.answers)) {
@@ -50,15 +52,15 @@ export function normalizeSubmission(lane: Lane, source: any, receivedAt: string)
   const phone = normalizePhone(a(candidate ? 4 : 6));
   if (text(a(5)) && !email) issues.push('INVALID_EMAIL');
   if (fullName(a(candidate ? 4 : 6)) && !phone) issues.push('INVALID_PHONE');
-  const meta = candidate ? [49, 50, 51] : [25, 26, 32];
-  const expected = candidate ? ['JEF-CANDIDATE-APPLICATION', '1.0'] : ['JF-CL-02', 'v1.1'];
+  const meta = agreement ? [32, 33, 34] : candidate ? [49, 50, 51] : [25, 26, 32];
+  const expected = agreement ? ['JEF-CANDIDATE-REPRESENTATION-AGREEMENT', '1.0'] : candidate ? ['JEF-CANDIDATE-APPLICATION', '1.0'] : ['JF-CL-02', 'v1.1'];
   for (let i = 0; i < 2; i++) if (text(a(meta[i])) && text(a(meta[i])) !== expected[i]) issues.push(i ? 'FORM_VERSION_CHANGED' : 'FORM_CODE_CHANGED');
   const environment = text(a(meta[2]));
   const qaName = candidate ? name : text(a(2));
   // QA is recognized by explicit source names; a hidden environment field alone is insufficient.
   const qa = qaName.startsWith('[JEF INTAKE QA]');
   if ((!qa && qaName.startsWith('[')) || (!qa && environment && !['Production', 'Live'].includes(environment))) issues.push('UNEXPECTED_ENVIRONMENT');
-  const sourceKey = `${candidate ? 'CANDIDATESRC' : 'CLIENTSRC'}|Jotform|${source.id}`;
+  const sourceKey = `${agreement ? 'REPRESENTATIONSRC' : candidate ? 'CANDIDATESRC' : 'CLIENTSRC'}|Jotform|${source.id}`;
   const snapshot = { formId: source.form_id, submissionId: source.id, createdAt: source.created_at, updatedAt: source.updated_at || null, answers };
   const version = digest(snapshot);
   // Account-local timestamps are retained verbatim, never silently interpreted as UTC.
@@ -66,7 +68,7 @@ export function normalizeSubmission(lane: Lane, source: any, receivedAt: string)
   const sourceTimestamp = /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(date) && !Number.isNaN(Date.parse(date)) ? new Date(date).toISOString() : null;
   const english = text(a(14));
   const englishMap: Record<string, string> = { Basic: 'Basic', Intermediate: 'Intermediate', Conversational: 'Conversational', Advanced: 'Advanced', 'Fluent / Native': 'Fluent', Fluent: 'Fluent' };
-  if (candidate && english && !englishMap[english]) issues.push('UNMAPPED_ENGLISH_LEVEL');
+  if (candidate && !agreement && english && !englishMap[english]) issues.push('UNMAPPED_ENGLISH_LEVEL');
   const services = asList(a(9));
   const allowedServices = ['Recruiting', 'Trial Staffing', 'Payroll Support', 'Invoice Billing', 'Content Opportunity', 'Other', 'Event Staffing', 'Temporary Staffing & Payroll Support', 'Trial-to-Hire', 'Direct Hire Recruiting', 'Not Sure'];
   if (!candidate && services.some(v => !allowedServices.includes(v))) issues.push('SERVICE_REQUIRES_MAPPING');
@@ -75,7 +77,8 @@ export function normalizeSubmission(lane: Lane, source: any, receivedAt: string)
   if (!candidate && text(a(15)) && !urgencyMap[text(a(15))]) issues.push('UNMAPPED_URGENCY');
   const attachments = asList(a(candidate ? 27 : 20)).filter(v => /^https:\/\/[^\s]+$/i.test(v.replace(/ /g, '%20')));
   return {
-    protocol: 'JEF-INTAKE-2', lane, formId: FORMS[lane], submissionId: source.id, sourceKey, version, receivedAt, sourceTimestamp, qa,
+    protocol: 'JEF-INTAKE-2', lane, kind: agreement ? 'representation' : 'intake', formId: String(source.form_id), submissionId: source.id, sourceKey, version, receivedAt, sourceTimestamp, qa,
+    agreement: agreement ? { candidateId: text(a(31)), signature: text(a(8)), formCode: text(a(32)), formVersion: text(a(33)) } : null,
     sourceURL: `https://www.jotform.com/submission/${source.id}`, snapshot, issues,
     person: { name, email, phone },
     candidate: candidate ? { location: address(a(8), true), preferredAreas: asList(a(11)).join('; '), targetRole: text(a(34)), availability: asList(a(36)).join('; '), english: englishMap[english] || '' } : null,

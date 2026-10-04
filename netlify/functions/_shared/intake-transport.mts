@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { FORMS, normalizeSubmission, text, type Lane } from './intake-normalize.mts';
+import { FORMS, REPRESENTATION_FORM, normalizeSubmission, text, type Lane } from './intake-normalize.mts';
 
 type Store = {
   getWithMetadata: (key: string, options: any) => Promise<any>;
@@ -167,11 +167,14 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
     try { form = await req.formData(); } catch { return response(400, { error: 'INVALID_FORM_DATA' }); }
     const submissionId = text(form.get('submissionID') ?? form.get('submission_id'));
     const formId = text(form.get('formID') ?? form.get('form_id'));
-    if (!/^\d{16,22}$/.test(submissionId) || formId !== FORMS[lane]) return response(400, { error: 'INVALID_SOURCE_IDENTITY' });
+    const representation = lane === 'candidate' && formId === REPRESENTATION_FORM;
+    if (!/^\d{16,22}$/.test(submissionId) || (!representation && formId !== FORMS[lane])) return response(400, { error: 'INVALID_SOURCE_IDENTITY' });
+    if (representation && env('JEF_REPRESENTATION_INTAKE_ENABLED') !== 'true') return response(503, { error: 'REPRESENTATION_NOT_ENABLED' });
     const provider = await deps.fetch(`https://api.jotform.com/submission/${submissionId}`, { headers: { APIKEY: apiKey }, signal: AbortSignal.timeout(15000) });
     if (!provider.ok) return response(provider.status === 404 ? 400 : 503, { error: 'PROVIDER_LOOKUP_FAILED' });
     const body = await provider.json();
     if (body.responseCode !== 200 || body.content?.id !== submissionId) return response(503, { error: 'PROVIDER_RESPONSE_INVALID' });
+    if (String(body.content?.form_id) !== formId) return response(400, { error: 'PROVIDER_FORM_OR_STATUS_MISMATCH' });
     const envelope = normalizeSubmission(lane, body.content, now());
     receiptId = `receipt/${lane}/${submissionId}/${envelope.version}`;
     let existing = await read(store, receiptId);

@@ -292,7 +292,7 @@ async function reconcile(envelope, base) {
   };
   let issues=[...e.issues], recordIds=[], applied={};
   const evidenceRows=await rows('evidence',['Evidence ID','Related Object ID','Notes','Candidates','Client Intake','Clients','Provenance Disposition']);
-  const evidenceKey=`${e.qa?'TEST-':''}EVD-JOTFORM-${e.lane.toUpperCase()}-${e.submissionId}-${e.version.slice(0,16)}`;
+  const evidenceKey=`${e.qa?'TEST-':''}EVD-JOTFORM-${e.kind==='representation'?'REPRESENTATION':e.lane.toUpperCase()}-${e.submissionId}-${e.version.slice(0,16)}`;
   let ev=evidenceRows.filter(r=>get(r,'evidence','Evidence ID')===evidenceKey);
   if(ev.length>1) throw new Error('DUPLICATE_SOURCE_EVIDENCE');
   const payload = status => ({ protocol:e.protocol, sourceKey:e.sourceKey, version:e.version, status, observedAt:e.receivedAt, snapshot:e.snapshot, issues:[...new Set(issues)], recordIds, applied });
@@ -315,6 +315,30 @@ async function reconcile(envelope, base) {
   // A human disposition, work authorization, reliability, or readiness is never inferred.
   const sourceFatal=issues.some(x=>['FORM_VERSION_CHANGED','FORM_CODE_CHANGED','UNEXPECTED_ENVIRONMENT'].includes(x));
   if(sourceFatal) return finish('exception','SOURCE_CONTRACT_CHANGED');
+  if(e.kind==='representation') {
+    // The tracked public form binds to Object ID. Contacts never repair a broken ID.
+    if(e.lane!=='candidate'||e.formId!=='261558428456063') throw new Error('INVALID_AGREEMENT_CONTEXT');
+    const a=e.agreement;
+    const all=await rows('candidates',['Object ID','Candidate','Email','Phone','Record Environment','Canonical Candidate Record','Population Reconciliation Disposition','Identity Reconciliation Status','Candidate Agreement Status','Evidence Records']);
+    const matches=all.filter(r=>a?.candidateId&&get(r,'candidates','Object ID')===a.candidateId);
+    let candidate=matches.length===1?await fresh('candidates',matches[0].id):null;
+    const invalid=issues.length>0||!candidate||!a?.candidateId||a.candidateId!==a.candidateId.trim()||/[\s<>]/.test(a.candidateId)||
+      !/^https:\/\//.test(a.signature||'')||a.formCode!=='JEF-CANDIDATE-REPRESENTATION-AGREEMENT'||a.formVersion!=='1.0'||
+      (get(candidate,'candidates','Record Environment')==='QA / Test')!==e.qa||
+      links(get(candidate,'candidates','Canonical Candidate Record')).length>0||
+      /ARCHIVED|DUPLICATE|EXCEPTION/.test(choice(get(candidate,'candidates','Population Reconciliation Disposition')))||
+      /Ambiguous|Exception/.test(choice(get(candidate,'candidates','Identity Reconciliation Status')))||
+      choice(get(candidate,'candidates','Candidate Agreement Status'))==='Declined'||
+      (e.person.name&&norm(e.person.name)!==norm(get(candidate,'candidates','Candidate')))||
+      (e.person.email&&nonempty(get(candidate,'candidates','Email'))&&!emails(get(candidate,'candidates','Email')).includes(e.person.email))||
+      (e.person.phone&&nonempty(get(candidate,'candidates','Phone'))&&phone(e.person.phone)!==phone(get(candidate,'candidates','Phone')));
+    if(invalid){issues.push('UNMATCHED_AGREEMENT');return finish('exception','UNMATCHED_AGREEMENT');}
+    const patch={'Evidence Records':addLink(candidate,'candidates','Evidence Records',evidenceId)};
+    if(choice(get(candidate,'candidates','Candidate Agreement Status'))!=='Signed') patch['Candidate Agreement Status']={name:'Signed'};
+    await update('candidates',candidate.id,patch);await verify('candidates',candidate.id,patch);
+    recordIds.push(candidate.id);await verify('evidence',evidenceId,{'Candidates':[{id:candidate.id}]});
+    return finish('done');
+  }
   const previousFor = recordId => {
     const versions=evidenceRows.map(r=>{try {const n=get(r,'evidence','Notes');return str(n).startsWith(machinePrefix)?JSON.parse(n.slice(machinePrefix.length)):null;}catch{return null;}})
       .filter(v=>v&&v.sourceKey===e.sourceKey&&v.recordIds?.includes(recordId)&&v.applied?.[recordId])
