@@ -1,8 +1,3 @@
 [build]
   command = ""
   publish = "."
-
-# Temporary, read-only verification of the existing intake provider wiring.
-# Produces a redacted deploy summary; remove after the release check.
-[[plugins]]
-  package = "./automation/intake/provider-check"
