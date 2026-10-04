@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { FORMS, REPRESENTATION_FORM, normalizeSubmission, text, type Lane } from './intake-normalize.mts';
+import { FORMS, REPRESENTATION_FORM, CLIENT_AGREEMENT_FORM, normalizeSubmission, text, type Lane } from './intake-normalize.mts';
 
 type Store = {
   getWithMetadata: (key: string, options: any) => Promise<any>;
@@ -115,6 +115,7 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
         lane, state: slot?.data?.state || 'idle',
         enabled: env(`JEF_${lane.toUpperCase()}_INTAKE_V2_ENABLED`) === 'true',
         dispatchPaused: dispatchPaused(),
+        agreementEnabled: env(lane === 'candidate' ? 'JEF_REPRESENTATION_INTAKE_ENABLED' : 'JEF_CLIENT_AGREEMENT_INTAKE_ENABLED') === 'true',
         active: slot?.data?.state === 'active' ? inspect(slot.data.receiptId, await read(store, slot.data.receiptId)) : null,
         last: slot?.data?.lastReceiptId ? inspect(slot.data.lastReceiptId, await read(store, slot.data.lastReceiptId)) : null,
         receipt: selected ? inspect(selected, await read(store, selected)) : null,
@@ -168,8 +169,10 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
     const submissionId = text(form.get('submissionID') ?? form.get('submission_id'));
     const formId = text(form.get('formID') ?? form.get('form_id'));
     const representation = lane === 'candidate' && formId === REPRESENTATION_FORM;
-    if (!/^\d{16,22}$/.test(submissionId) || (!representation && formId !== FORMS[lane])) return response(400, { error: 'INVALID_SOURCE_IDENTITY' });
+    const clientAgreement = lane === 'client' && formId === CLIENT_AGREEMENT_FORM;
+    if (!/^\d{16,22}$/.test(submissionId) || (!representation && !clientAgreement && formId !== FORMS[lane])) return response(400, { error: 'INVALID_SOURCE_IDENTITY' });
     if (representation && env('JEF_REPRESENTATION_INTAKE_ENABLED') !== 'true') return response(503, { error: 'REPRESENTATION_NOT_ENABLED' });
+    if (clientAgreement && env('JEF_CLIENT_AGREEMENT_INTAKE_ENABLED') !== 'true') return response(503, { error: 'CLIENT_AGREEMENT_NOT_ENABLED' });
     const provider = await deps.fetch(`https://api.jotform.com/submission/${submissionId}`, { headers: { APIKEY: apiKey }, signal: AbortSignal.timeout(15000) });
     if (!provider.ok) return response(provider.status === 404 ? 400 : 503, { error: 'PROVIDER_LOOKUP_FAILED' });
     const body = await provider.json();

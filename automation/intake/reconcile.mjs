@@ -36,12 +36,12 @@ export async function reconcile(envelope, base) {
     }
     return r;
   };
-  let issues=[...e.issues], recordIds=[], applied={};
+  let issues=[...e.issues], recordIds=[], applied={}, readback={};
   const evidenceRows=await rows('evidence',['Evidence ID','Related Object ID','Notes','Candidates','Client Intake','Clients','Provenance Disposition']);
-  const evidenceKey=`${e.qa?'TEST-':''}EVD-JOTFORM-${e.kind==='representation'?'REPRESENTATION':e.lane.toUpperCase()}-${e.submissionId}-${e.version.slice(0,16)}`;
+  const evidenceKey=`${e.qa?'TEST-':''}EVD-JOTFORM-${e.kind==='clientAgreement'?'CLIENT-AGREEMENT':e.kind==='representation'?'REPRESENTATION':e.lane.toUpperCase()}-${e.submissionId}-${e.version.slice(0,16)}`;
   let ev=evidenceRows.filter(r=>get(r,'evidence','Evidence ID')===evidenceKey);
   if(ev.length>1) throw new Error('DUPLICATE_SOURCE_EVIDENCE');
-  const payload = status => ({ protocol:e.protocol, sourceKey:e.sourceKey, version:e.version, status, observedAt:e.receivedAt, snapshot:e.snapshot, issues:[...new Set(issues)], recordIds, applied });
+  const payload = status => ({ protocol:e.protocol, sourceKey:e.sourceKey, version:e.version, status, observedAt:e.receivedAt, snapshot:e.snapshot, issues:[...new Set(issues)], recordIds, applied, readback });
   const sourceFields={
     'Evidence ID':evidenceKey,'Evidence Type':{name:e.qa?'System Test':'Source Document'},
     'Related Module':{name:e.lane==='candidate'?'Recruiting':'Client Intake'},
@@ -61,6 +61,81 @@ export async function reconcile(envelope, base) {
   // A human disposition, work authorization, reliability, or readiness is never inferred.
   const sourceFatal=issues.some(x=>['FORM_VERSION_CHANGED','FORM_CODE_CHANGED','UNEXPECTED_ENVIRONMENT'].includes(x));
   if(sourceFatal) return finish('exception','SOURCE_CONTRACT_CHANGED');
+  if(e.kind==='clientAgreement') {
+    if(e.lane!=='client'||e.formId!=='262220234744045') throw new Error('INVALID_CLIENT_AGREEMENT_CONTEXT');
+    const a=e.clientAgreement;
+    const exactId=v=>typeof v==='string'&&v.length>0&&v.length<=200&&!/[\s<>]/.test(v);
+    const clientRows=await rows('clients',['NEXT Object ID','Client Name','Record Environment']);
+    const intakeRows=await rows('intake',['Request ID','Converted Client','Record Environment']);
+    // Both supplied IDs must resolve uniquely and the request's existing relation
+    // must already point to that exact account. Names/contacts cannot repair IDs.
+    const cm=clientRows.filter(r=>a?.clientId&&(r.id===a.clientId||get(r,'clients','NEXT Object ID')===a.clientId));
+    const im=intakeRows.filter(r=>a?.intakeId&&(r.id===a.intakeId||get(r,'intake','Request ID')===a.intakeId));
+    let client=cm.length===1?await fresh('clients',cm[0].id):null;
+    let intake=im.length===1?await fresh('intake',im[0].id):null;
+    const acknowledgment=a?.acknowledgment===true||a?.acknowledgment==='Yes'||a?.acknowledgment==='true';
+    const providerDate=value=>{
+      const d=typeof value==='object'&&value?`${value.year}-${String(value.month).padStart(2,'0')}-${String(value.day).padStart(2,'0')}`:str(value);
+      return /^\d{4}-\d{2}-\d{2}$/.test(d)&&!Number.isNaN(Date.parse(d))&&new Date(d).toISOString().slice(0,10)===d?d:null;
+    };
+    const signatureDate=providerDate(a?.signatureDate), effectiveDate=providerDate(a?.effectiveDate);
+    const current=links(get(client,'clients','Current Agreement Evidence'));
+    const status=choice(get(client,'clients','Commercial Agreement Status'));
+    const agreementCollision=evidenceRows.some(r=>{
+      try {
+        const notes=get(r,'evidence','Notes');
+        if(r.id===evidenceId||!str(notes).startsWith(machinePrefix)) return false;
+        const prior=JSON.parse(notes.slice(machinePrefix.length));
+        return prior.snapshot?.formId==='262220234744045'&&prior.snapshot?.answers?.['20']?.value===a?.agreementId&&
+          prior.snapshot?.submissionId!==e.submissionId;
+      } catch { return false; }
+    });
+    const invalid=issues.length>0||agreementCollision||!client||!intake||![a?.clientId,a?.intakeId,a?.agreementId].every(exactId)||
+      a.formCode!=='JF-CL-AGR-01'||a.formVersion!=='AGR-JEF-2026-v0.3'||
+      !acknowledgment||!/^https:\/\/[^\s]+$/.test(a.signature||'')||!signatureDate||!effectiveDate||
+      signatureDate>e.receivedAt.slice(0,10)||!e.person.name||!e.person.email||!a.signerTitle||!a.printedNameTitle||
+      !norm(e.client.business)||norm(e.client.business)!==norm(get(client,'clients','Client Name'))||
+      (get(client,'clients','Record Environment')==='QA / Test')!==e.qa||
+      (get(intake,'intake','Record Environment')==='QA / Test')!==e.qa||
+      !['Production','Live',...(e.qa?['QA / Test','QA','Test']:[])].includes(a.environment)||
+      stable(links(get(intake,'intake','Converted Client')))!==stable([client?.id])||
+      !['Existing Client — exact/strong match','New Client — sufficiently distinct'].includes(choice(get(intake,'intake','Client Identity Reconciliation')))||
+      ['Needs Review','Superseded','Terminated'].includes(status)||
+      current.length>1||(current.length===1&&current[0]!==evidenceId)||
+      (status==='Fully Signed'&&current[0]!==evidenceId)||
+      ['Exception','Superseded','Not Required'].includes(choice(get(intake,'intake','Agreement Control Status')));
+    if(invalid){issues.push('UNMATCHED_OR_UNVERIFIED_CLIENT_AGREEMENT');return finish('exception','CLIENT_AGREEMENT_REQUIRES_REVIEW');}
+    const patch={'Commercial Agreement Status':{name:'Fully Signed'},'Current Agreement Evidence':[{id:evidenceId}],
+      'Agreement Effective Date':effectiveDate,'Evidence Records':addLink(client,'clients','Evidence Records',evidenceId),
+      'Agreement History Evidence':addLink(client,'clients','Agreement History Evidence',evidenceId)};
+    await update('clients',client.id,patch);client=await verify('clients',client.id,patch);recordIds.push(client.id);
+    // Re-read after account write and before advancing the request seam.
+    intake=await fresh('intake',intake.id);client=await fresh('clients',client.id);
+    if(stable(links(get(intake,'intake','Converted Client')))!==stable([client.id])||
+      choice(get(client,'clients','Commercial Agreement Status'))!=='Fully Signed'||
+      stable(links(get(client,'clients','Current Agreement Evidence')))!==stable([evidenceId])||
+      ['Exception','Superseded','Not Required'].includes(choice(get(intake,'intake','Agreement Control Status')))) {
+      issues.push('CLIENT_AGREEMENT_CHANGED_DURING_RECONCILIATION');return finish('exception');
+    }
+    const relation={'Agreement Control Status':{name:'Accepted / Current'},'Evidence Records':addLink(intake,'intake','Evidence Records',evidenceId)};
+    await update('intake',intake.id,relation);intake=await verify('intake',intake.id,relation);recordIds.push(intake.id);
+    await verify('evidence',evidenceId,{'Clients':[{id:client.id}],'Client Intake':[{id:intake.id}]});
+    // Formula readback is recorded, never replaced by a signature-only PASS.
+    intake=await fresh('intake',intake.id);
+    client=await fresh('clients',client.id);
+    if(choice(get(client,'clients','Commercial Agreement Status'))!=='Fully Signed'||
+      stable(links(get(client,'clients','Current Agreement Evidence')))!==stable([evidenceId])||
+      stable(links(get(intake,'intake','Converted Client')))!==stable([client.id])||
+      choice(get(intake,'intake','Agreement Control Status'))!=='Accepted / Current') {
+      issues.push('CLIENT_AGREEMENT_READBACK_CHANGED');return finish('exception');
+    }
+    for(const f of ['Record Environment','CLI-01A Source Identity Gate','CLI-02A Commercial Authority Gate',
+      'CLI-01A Commercial / Service Authorization Gate','Client Readiness State','Client Readiness Blockers',
+      'Service Authorization Decision','Proposal Control Status','Rate Card Control Status',
+      'Agreement Control Status','Insurance / Compliance / Onboarding Control Status']) readback[f]=get(intake,'intake',f);
+    const authorized=readback['Record Environment']==='Production / Live'&&readback['CLI-01A Commercial / Service Authorization Gate']==='PASS — SERVICE REQUEST AUTHORIZED / STOP BEFORE COVERAGE';
+    return finish('done',authorized?'AGREEMENT_RECORDED_GATE_PASS_STOP_BEFORE_COVERAGE':'AGREEMENT_RECORDED_COMMERCIAL_GATE_HELD');
+  }
   if(e.kind==='representation') {
     // The tracked public form binds to Object ID. Contacts never repair a broken ID.
     if(e.lane!=='candidate'||e.formId!=='261558428456063') throw new Error('INVALID_AGREEMENT_CONTEXT');
