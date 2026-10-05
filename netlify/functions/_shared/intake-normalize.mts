@@ -11,6 +11,11 @@ export function canonicalJSON(value: any): string {
   return JSON.stringify(value ?? null);
 }
 export function digest(value: unknown): string { return createHash('sha256').update(canonicalJSON(value)).digest('hex'); }
+export function evidenceVersion(snapshot: any): string {
+  if (!snapshot || typeof snapshot !== 'object') return '';
+  const { formId, submissionId, createdAt, answers } = snapshot;
+  return digest({ formId, submissionId, createdAt, answers });
+}
 export function normalizeEmail(value: unknown): string {
   const v = text(value).toLowerCase();
   return /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(v) ? v : '';
@@ -59,8 +64,11 @@ export function normalizeSubmission(lane: Lane, source: any, receivedAt: string)
   const qa = qaName.startsWith('[JEF INTAKE QA]');
   if ((!qa && qaName.startsWith('[')) || (!qa && environment && !['Production', 'Live'].includes(environment))) issues.push('UNEXPECTED_ENVIRONMENT');
   const sourceKey = `${candidate ? 'CANDIDATESRC' : 'CLIENTSRC'}|Jotform|${source.id}`;
+  // Keep mutable provider metadata in the audit snapshot, but do not let it define
+  // evidence identity. Jotform can advance updated_at during a replay even when the
+  // actual submitted answers are unchanged.
   const snapshot = { formId: source.form_id, submissionId: source.id, createdAt: source.created_at, updatedAt: source.updated_at || null, answers };
-  const version = digest(snapshot);
+  const version = evidenceVersion(snapshot);
   // Account-local timestamps are retained verbatim, never silently interpreted as UTC.
   const date = text(source.created_at);
   const sourceTimestamp = /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(date) && !Number.isNaN(Date.parse(date)) ? new Date(date).toISOString() : null;
