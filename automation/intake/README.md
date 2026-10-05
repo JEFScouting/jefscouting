@@ -8,6 +8,8 @@ A bounded private Netlify build check used the existing build credentials withou
 
 The report is visible in Netlify deploy `6ac316b88b3b094cde4a34c3`. The diagnostic was temporary and its build-plugin configuration was removed after readback. An attempted build-time agreement-hook registration was rejected by automatic approval review as bypassing the explicit human activation gate; the attempt was removed, not retried. Agreement/native activation remains human-controlled. No successful agreement wiring or live canary is claimed.
 
+The normal deployment `6ac3177b8b3b0950b34a347c` is independently ready/published with four functions and plugin_state none. Automatic approval review also rejected the attempted controlled dispatch-pause deployment as an unauthorized production interruption. Both original production dispatchPaused=false settings were restored and independently read back; V2 stays true. Any subsequent coordinated pause/native apply requires explicit approval.
+
 Existing native inventory remains exactly two automations with valid drafts and distinct published versions. Client native wiring save action `actK73HsVtJK714W1` is reversible and independently matches 77,733 generated characters. Candidate's previous generated script remains unchanged. Full provider→published-native→canonical CREATE/REUSE/HOLD/replay acceptance remains pending human review/apply. Reminder executor/wake, source-to-header extraction and exact upstream time reconciliation remain unfinished.
 
 ## Deployment and existing native wiring — 2026-10-04 late evening
