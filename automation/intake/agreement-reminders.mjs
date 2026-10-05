@@ -42,3 +42,53 @@ export async function rereadReminder(candidateId, { readCandidate, readProvider,
   const provider=await readProvider(candidateId);
   return reminderDecision(candidate,provider,now());
 }
+
+// Executor integration contract. The provider/claim/evidence implementations
+// must come from the existing governed Gmail executor; no raw send or clock is
+// installed here. An uncertain external effect is never retried by this code.
+export async function executeReminder(candidateId,deps) {
+  const hold=reason=>({disposition:'HOLD',reason});
+  const required=['readCandidate','readProvider','now','readApprovedPayload','claimEffect','cancelClaim','markSending','sendApprovedPayload','markUnknown','persistSendEvidence','markSent','writeCandidateTimestamp','verifyCandidateTimestamp'];
+  if(required.some(k=>typeof deps?.[k]!=='function'))return hold('GOVERNED_EXECUTOR_REQUIRED');
+  let candidate=await deps.readCandidate(candidateId),provider=await deps.readProvider(candidateId);
+  let decision=reminderDecision(candidate,provider,deps.now());
+  if(decision.disposition==='RECONCILE'){
+    const proof=provider.effects.filter(e=>e.key===decision.key&&e.outcome==='sent');
+    if(proof.length!==1||!proof[0].messageId||!proof[0].threadId||proof[0].recipient!==candidate.Email)return hold('PROVIDER_SEND_READBACK_UNCONFIRMED');
+    const evidence=await deps.persistSendEvidence(candidateId,decision.key,proof[0]);
+    if(!/^rec[A-Za-z0-9]{14}$/.test(evidence?.evidenceId||''))throw new Error('SEND_EVIDENCE_READBACK_REQUIRED');
+    await deps.writeCandidateTimestamp(candidateId,decision.field,decision.value);
+    if(!await deps.verifyCandidateTimestamp(candidateId,decision.field,decision.value))throw new Error('REMINDER_TIMESTAMP_READBACK_FAILED');
+    return {...decision,disposition:'RECONCILED'};
+  }
+  if(decision.disposition!=='DUE')return decision;
+  const approved=payload=>payload?.approved===true&&payload.candidateId===candidateId&&payload.step===decision.step&&payload.key===decision.key&&payload.recipient===candidate.Email&&payload.trackedLink===candidate['Tracked Representation Agreement Link']&&typeof payload.version==='string'&&payload.version.length>0&&typeof payload.body==='string'&&payload.body.includes(payload.trackedLink);
+  const payload=await deps.readApprovedPayload(candidateId,decision.step);
+  if(!approved(payload))return hold('EXACT_APPROVED_TRACKED_PAYLOAD_REQUIRED');
+  const claim=await deps.claimEffect(decision.key,payload.version);
+  if(claim?.status!=='claimed'||claim.key!==decision.key||!claim.claimId)return hold('EFFECT_ALREADY_CLAIMED_OR_UNCERTAIN');
+  candidate=await deps.readCandidate(candidateId);provider=await deps.readProvider(candidateId);
+  const fresh=reminderDecision(candidate,provider,deps.now()),freshPayload=await deps.readApprovedPayload(candidateId,decision.step);
+  if(fresh.disposition!=='DUE'||fresh.key!==decision.key||!approved(freshPayload)||JSON.stringify(freshPayload)!==JSON.stringify(payload)){
+    await deps.cancelClaim(claim);
+    return fresh.disposition==='DUE'?hold('APPROVED_PAYLOAD_CHANGED'):fresh;
+  }
+  if(!await deps.markSending(claim))return hold('EXCLUSIVE_EFFECT_CLAIM_LOST');
+  let sent;
+  try{sent=await deps.sendApprovedPayload(payload,claim);}catch{await deps.markUnknown(claim);return hold('PROVIDER_OUTCOME_UNCERTAIN');}
+  // Transport acceptance alone is not provider evidence. The exact message,
+  // thread, route, sent timestamp and logical step must independently agree.
+  provider=await deps.readProvider(candidateId);
+  const proof=provider?.effects?.filter(e=>e.key===decision.key&&e.step===decision.step&&e.outcome==='sent');
+  const observed=proof?.length===1?proof[0]:null;
+  if(provider?.candidateId!==candidateId||provider.complete!==true||!observed||!sent?.messageId||!sent?.threadId||observed.messageId!==sent.messageId||observed.threadId!==sent.threadId||observed.recipient!==payload.recipient||observed.payloadVersion!==payload.version||observed.trackedLink!==payload.trackedLink||!Number.isFinite(millis(observed.sentAt))||millis(observed.sentAt)>millis(deps.now())){
+    await deps.markUnknown(claim);return hold('PROVIDER_SEND_READBACK_UNCONFIRMED');
+  }
+  const evidence=await deps.persistSendEvidence(candidateId,decision.key,observed);
+  if(!/^rec[A-Za-z0-9]{14}$/.test(evidence?.evidenceId||''))throw new Error('SEND_EVIDENCE_READBACK_REQUIRED');
+  await deps.markSent(claim,observed,evidence);
+  const field=fields[steps.indexOf(decision.step)];
+  await deps.writeCandidateTimestamp(candidateId,field,observed.sentAt);
+  if(!await deps.verifyCandidateTimestamp(candidateId,field,observed.sentAt))throw new Error('REMINDER_TIMESTAMP_READBACK_FAILED');
+  return {disposition:'SENT_VERIFIED',step:decision.step,key:decision.key,messageId:observed.messageId,threadId:observed.threadId,evidenceId:evidence.evidenceId};
+}
