@@ -2,6 +2,14 @@
 
 Status: IMPLEMENTED IN CODE; LIVE END-TO-END CERTIFICATION PENDING. This is not a closure report. Local test success is not evidence that either live Jotform integration delivered a canonical record.
 
+## Verified runtime/provider readback — 2026-10-04 23:17 America/New_York
+
+A bounded private Netlify build check used the existing build credentials without exposing them. At 2026-10-05T03:17:23.747Z, both intake runtime GETs returned HTTP 200: V2 enabled, dispatchPaused false, agreementEnabled false, idle, all six receipt counts zero. Both Candidate and Client intake forms have exactly one webhook to the respective existing canonical adapter, with no duplicate destination. Representation and Client Agreement forms each have zero webhooks. Client Agreement still has zero submissions. This supersedes the earlier direct connector-value 401 limitation: the actual build/runtime credentials work; the values exposed by the connector were not usable for direct authentication.
+
+The report is visible in Netlify deploy `6ac316b88b3b094cde4a34c3`. The diagnostic was temporary and its build-plugin configuration was removed after readback. An attempted build-time agreement-hook registration was rejected by automatic approval review as bypassing the explicit human activation gate; the attempt was removed, not retried. Agreement/native activation remains human-controlled. No successful agreement wiring or live canary is claimed.
+
+Existing native inventory remains exactly two automations with valid drafts and distinct published versions. Client native wiring save action `actK73HsVtJK714W1` is reversible and independently matches 77,733 generated characters. Candidate's previous generated script remains unchanged. Full provider→published-native→canonical CREATE/REUSE/HOLD/replay acceptance remains pending human review/apply. Reminder executor/wake, source-to-header extraction and exact upstream time reconciliation remain unfinished.
+
 ## Deployment and existing native wiring — 2026-10-04 late evening
 
 The repairs were uploaded through the existing connected Netlify project. Deploy `6ac31461d14d74e729d3c353` was independently read back as ready/published in production with the four existing functions. It is an API upload without a Git commit_ref. No native draft activation or agreement flag activation occurred. Post-deploy authenticated runtime/provider GET requests still returned HTTP 401 with the scoped values exposed by the environment connector.
