@@ -128,7 +128,7 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
     if ((req.headers.get('content-type') || '').includes('application/json')) {
       let body: any;
       try { body = await req.json(); } catch { return response(400, { error: 'INVALID_JSON' }); }
-      if (!['claim', 'complete', 'retry'].includes(body?.action) || !validReceipt(body.receiptId)) return response(400, { error: 'INVALID_CONTROL_REQUEST' });
+      if (!['claim', 'assertClaim', 'complete', 'retry'].includes(body?.action) || !validReceipt(body.receiptId)) return response(400, { error: 'INVALID_CONTROL_REQUEST' });
       receiptId = body.receiptId;
       const receipt = await read(store, receiptId);
       if (body.action === 'retry') {
@@ -141,6 +141,15 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
       }
       if (!receipt || !equal(body.token, receipt.data.token)) return response(403, { error: 'INVALID_RECEIPT' });
       const slot = await read(store, laneKey);
+      if (body.action === 'assertClaim') {
+        // Read-only proof for the currently executing native writer. Never
+        // extends a claim, releases a lane or authorizes another receipt.
+        const held = receipt.data.status === 'claimed' &&
+          equal(body.consumerToken, receipt.data.consumerToken) &&
+          slot?.data?.state === 'active' && slot.data.receiptId === receiptId &&
+          equal(slot.data.token, body.token);
+        return response(held ? 200 : 409, { held });
+      }
       if (body.action === 'claim') {
         if (['done', 'exception'].includes(receipt.data.status)) return response(200, { skip: true, status: receipt.data.status });
         if (!slot || slot.data.receiptId !== receiptId || !equal(slot.data.token, body.token) || receipt.data.status !== 'dispatching') return response(409, { error: 'ALREADY_CLAIMED_OR_NOT_ACTIVE' });

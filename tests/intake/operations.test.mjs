@@ -1,6 +1,16 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {FakeBase} from './harness.mjs';import {fillMissingStaffingSlots} from '../../automation/intake/coverage-slots.mjs';import {prepareFinanceDrafts} from '../../automation/intake/finance-drafts.mjs';
 const ctx={qa:true,exclusiveClaim:async()=>true};
+import {runIntakeHandoffs} from '../../automation/intake/handoff-runner.mjs';
+test('existing Client claim runs exact sourced slot and verified financial handoffs, with replay reuse',async()=>{
+ const f=await completed(),e={lane:'client',qa:true},r={status:'done',recordIds:[f.evidenceId]};
+ const first=await runIntakeHandoffs(e,r,f.b,async()=>true);
+ assert.equal(first.slots.created.length,0);assert.equal(first.slots.reused.length,2);
+ assert.equal(first.finance[0].disposition,'DRAFTS_PREPARED');
+ const replay=await runIntakeHandoffs(e,r,f.b,async()=>true);assert.deepEqual(replay,first);
+ for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);
+ assert.equal((await runIntakeHandoffs(e,r,f.b,async()=>false)).reason,'EXCLUSIVE_NATIVE_CLAIM_REQUIRED');
+});
 function fixture(){const b=new FakeBase(),clientId=b.seed('clients',{'Client Name':'[JEF INTAKE QA] Client'}),workerId=b.seed('workers',{'Worker':'TEST-Worker'}),requestId=b.seed('intake',{'Request ID':'TEST-REQUEST','Converted Client':[{id:clientId}],'CLI-01A Commercial / Service Authorization Gate':'PASS — SERVICE REQUEST AUTHORIZED / STOP BEFORE COVERAGE'}),headerId=b.seed('coverage',{'Coverage Request':'TEST-Demand','Coverage Record Type':{name:'Demand Header'},'Client Record':[{id:clientId}],'Source Client Intake':[{id:requestId}],'Required Headcount':2,'Source Event ID':'TEST-EVENT',Role:'Barista','Shift Date':'2026-10-01','Start Time':'2026-10-01T11:00:00Z','End Time':'2026-10-01T23:00:00Z',Location:'QA Venue','Assignment Sequence':1,'Shift Block Sequence':1}),evidenceId=b.seed('evidence',{'Evidence ID':'TEST-EVIDENCE',Verified:true,'Source Provenance Verified':true,'Provenance Disposition':{name:'Accepted Source'},'Coverage Requests':[{id:headerId}],'Client Intake':[{id:requestId}]});b.data.coverage.get(headerId)['Evidence Records']=[{id:evidenceId}];return{b,clientId,workerId,requestId,headerId,evidenceId};}
 async function completed(){const f=fixture();const r=await fillMissingStaffingSlots(f.requestId,f.b,ctx),coverageId=r.created[0],c=f.b.data.coverage.get(coverageId);Object.assign(c,{'Worker Records':[{id:f.workerId}],'Attendance Outcome':{name:'Completed'},'Verified Hours':11.5,'Hours Evidence Verified':true,'Time Verification Status':{name:'Verified'},'Approved Worker Rate Snapshot':20,'Approved Client Rate Snapshot':30,'Rate Evidence Status':{name:'Verified'}});f.b.data.evidence.get(f.evidenceId)['Coverage Requests'].push({id:coverageId});return{...f,coverageId};}
 test('P2 creates only missing slots and replay reuses exact slots without bookings/workers',async()=>{const f=fixture(),r=await fillMissingStaffingSlots(f.requestId,f.b,ctx);assert.equal(r.disposition,'SLOTS_RECONCILED');assert.equal(r.created.length,2);const replay=await fillMissingStaffingSlots(f.requestId,f.b,ctx);assert.equal(replay.created.length,0);assert.deepEqual(replay.reused,r.created);assert.equal(f.b.data.coverage.size,3);assert.equal(f.b.data.bookings.size,0);assert.equal(f.b.data.workers.size,1);});

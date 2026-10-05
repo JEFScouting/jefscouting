@@ -2,6 +2,14 @@
 
 Status: IMPLEMENTED IN CODE; LIVE END-TO-END CERTIFICATION PENDING. This is not a closure report. Local test success is not evidence that either live Jotform integration delivered a canonical record.
 
+## Deployment and existing native wiring — 2026-10-04 late evening
+
+The repairs were uploaded through the existing connected Netlify project. Deploy `6ac31461d14d74e729d3c353` was independently read back as ready/published in production with the four existing functions. It is an API upload without a Git commit_ref. No native draft activation or agreement flag activation occurred. Post-deploy authenticated runtime/provider GET requests still returned HTTP 401 with the scoped values exposed by the environment connector.
+
+The Client native draft now bundles the P2 slot writer and P3 draft writer through `handoff-runner.mjs`, within its existing receipt claim. The transport's read-only `assertClaim` checks the exact active receipt, receipt token and consumer token before handoff writes; a completed/forged/lost claim cannot pass. The runner resolves exactly one Intake from the reconciled source Evidence and checks environment/client linkage. It consumes an existing reviewed Demand Header, and rechecks already Completed/Verified slots associated with that exact request. At most five such financial handoffs run per receipt; additional exact Coverage IDs are returned visibly for later governed execution. This is an opportunistic Client-event integration, **not** a shift-completion trigger or reminder wake. Native output `handoffReadback` preserves separate slot and finance HOLD/result readbacks rather than claiming intake success implies downstream success.
+
+Source-to-Demand-Header extraction, P3A exact worker/slot/time binding and a genuine time-change event/wake remain incomplete. The reminder provider/executor/wake also remains absent; no new queue, timer, automation or ledger is installed. Later source changes require a governed event; identical terminal receipt replay still does not rerun effects. Native human review/apply and live canaries remain required. The additional local verification executes the actual generated Client script through the simulated transport claim/completion path and verifies source-faithful positive/replay handoffs separately. These checks are not live delivery proof.
+
 ## P1–P3 completion review — 2026-10-04 evening (America/New_York)
 
 Re-read the canonical handoff and both acceptance addenda before this pass. New reviewable modules use only the current canonical field IDs and tables; none has been installed as a new live automation, queue, form or scheduler.
