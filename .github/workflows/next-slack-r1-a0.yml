@@ -1,0 +1,26 @@
+name: NEXT Slack R1 A0 adapter
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/next-slack-r1-a0.yml"
+      - "netlify/functions/next-slack-r1-read.mts"
+      - "netlify/functions/_next-slack-r1-trace.mts"
+      - "test/next-slack-r1-read.test.mjs"
+
+permissions:
+  contents: read
+
+jobs:
+  boundary-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Run zero-provider fixture tests
+        run: node --test test/next-slack-r1-read.test.mjs
