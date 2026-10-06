@@ -95,6 +95,8 @@ test('first post-patch replay reuses an equivalent pre-patch legacy receipt', as
   legacy.data.envelope.version = digest(legacy.data.envelope.snapshot);
   const legacyKey = `receipt/candidate/${first.id}/${legacy.data.envelope.version}`;
   x.store.entries.delete(stableKey);
+  // Emulate pre-patch storage, which had no occurrence admission head.
+  x.store.entries.delete(`head/candidate/${first.id}`);
   x.store.entries.set(legacyKey, legacy);
 
   const replay = structuredClone(first);
