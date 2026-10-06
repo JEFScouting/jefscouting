@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { FORMS, REPRESENTATION_FORM, CLIENT_AGREEMENT_FORM, normalizeSubmission, text, type Lane } from './intake-normalize.mts';
+import { FORMS, REPRESENTATION_FORM, CLIENT_AGREEMENT_FORM, evidenceVersion, normalizeSubmission, text, type Lane } from './intake-normalize.mts';
 
 type Store = {
   getWithMetadata: (key: string, options: any) => Promise<any>;
@@ -48,6 +48,17 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
       }
     }
     return result.sort((a, b) => String(a.data.envelope.receivedAt).localeCompare(String(b.data.envelope.receivedAt)));
+  };
+  const equivalentReceipt = async (prefix: string, version: string) => {
+    const matches: Array<{ key: string; value: any }> = [];
+    for await (const page of store.list({ prefix, paginate: true })) {
+      for (const item of page.blobs) {
+        const value = await read(store, item.key);
+        if (value && evidenceVersion(value.data?.envelope?.snapshot) === version) matches.push({ key: item.key, value });
+      }
+    }
+    const rank = (status: string) => ['done', 'exception'].includes(status) ? 0 : ['claimed', 'dispatching', 'queued'].includes(status) ? 1 : status === 'failed' ? 2 : 3;
+    return matches.sort((a, b) => rank(a.value.data.status) - rank(b.value.data.status))[0] || null;
   };
   const inspect = (key: string, value: any) => value ? {
     receiptId: key, status: value.data.status, receivedAt: value.data.envelope.receivedAt,
@@ -188,8 +199,16 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
     if (body.responseCode !== 200 || body.content?.id !== submissionId) return response(503, { error: 'PROVIDER_RESPONSE_INVALID' });
     if (String(body.content?.form_id) !== formId) return response(400, { error: 'PROVIDER_FORM_OR_STATUS_MISMATCH' });
     const envelope = normalizeSubmission(lane, body.content, now());
-    receiptId = `receipt/${lane}/${submissionId}/${envelope.version}`;
+    const receiptPrefix = `receipt/${lane}/${submissionId}/`;
+    receiptId = `${receiptPrefix}${envelope.version}`;
     let existing = await read(store, receiptId);
+    // Migration compatibility: receipts created before semantic versioning hashed the
+    // full snapshot, including mutable updatedAt. Reuse any equivalent legacy receipt
+    // instead of manufacturing a new receipt/evidence on first post-patch replay.
+    if (!existing) {
+      const compatible = await equivalentReceipt(receiptPrefix, envelope.version);
+      if (compatible) { receiptId = compatible.key; existing = compatible.value; }
+    }
     if (!existing) {
       await cas(store, receiptId, { status: 'queued', envelope });
       existing = await read(store, receiptId);

@@ -2,6 +2,25 @@
 
 Status: IMPLEMENTED IN CODE; LIVE END-TO-END CERTIFICATION PENDING. This is not a closure report. Local test success is not evidence that either live Jotform integration delivered a canonical record.
 
+## P1–P6 continuation checkpoint — 2026-10-06
+
+The existing `mateo/p1-agreement-cadence` branch incorporates production main commit `457dbaa4005169d3309d24dba9da9ebcd733d179` without replacing the agreement extensions or the guarded Client handoffs. The two merge conflicts are resolved by retaining the agreement source-key namespaces and form constants together with main's semantic evidence versioning and legacy-receipt reuse. Regression tests cover metadata-only replay, genuine answer changes and legacy-receipt migration for both agreement forms. No endpoints, flags, runtime, tables or queues were added.
+
+Live Netlify API readback: canonical site `0b736ac6-14f3-4766-9ed4-15561e64d17e`, `jefscouting.com`, production deploy `6ac427ba30af650008f6fd95`, state ready, commit `457dbaa`. That production tree lacks this branch's agreement transport and handoff implementation. This continuation prepares the existing PR; it does not claim those extensions are currently deployed.
+
+Fresh Airtable readback supersedes the historical native-application blockers below: both existing automations are deployed/valid, have no differing deployedVersion, and their script inputs match this branch's generated Candidate (39,192 characters) and Client (77,733 characters) byte-for-byte. This proves native publication, not provider-to-canonical delivery or replay acceptance.
+
+The available connected Netlify operations expose neither site-level environment read nor mutation. `JEF_REPRESENTATION_INTAKE_ENABLED` and `JEF_CLIENT_AGREEMENT_INTAKE_ENABLED` were last verified false; their current stored values are unknown. Required eventual targets are true only with matching transport/native release and genuine governed source events. The first flag blocks P1-C representation ingestion; the second blocks P2 Client agreement ingestion. Enabling either flag alone does not resolve production's missing transport code. No replacement flags, build-time activation trick, browser-login retry or alternative configuration machinery was introduced.
+
+Independent live prerequisite readbacks:
+- P2: all 37 Client Intake records read; no Production / Live full service-authorization PASS. The two QA PASS cases remain QA. Client Agreement form has zero submissions; no signature or authority is inferred.
+- P3: all 148 Coverage records read. The 81 Production / Live records dated Sep 28–Oct 1 (including the header) have no assigned Worker or positive Verified Hours. Exact source/Worker/slot/time reconciliation remains required; aggregate historical pay is not distributed by inference.
+- P4: exact Email Intake searches for Gmail IDs `1a10436363da2122`, `1a10724121a5813b`, `1a104439c06407db`, and `1a107f5408dc954e` still return zero rows. Automation census contains only the two intake adapters. This is an unresolved ingestion gap, not a repaired email path.
+- P5: all 34 Worker Bookings read: 28 Completed, 1 Cancelled, 4 Released, 1 Replaced. These statuses alone do not prove durable evidence propagation to Worker/Candidate history.
+- P6: all 50 Payroll records and 18 Finance Control records read; 17 Finance settlement-source gates are blocked, one is reconciled. No automated provider settlement ingestion/replay acceptance is claimed.
+
+P1-D governed reminder provider/executor/wake, P2 source-to-header extraction, P3 source-time reconciliation/event integration, and P4–P6 deterministic event integrations remain open independently of the two agreement flags. No reminders, Coverage demand, money drafts, payments, invoice sends, fabricated signatures, or settlement effects were executed during this continuation. P1–P6 must remain OPEN until their actual source-to-canonical transitions and identical replay are proven.
+
 ## Verified runtime/provider readback — 2026-10-04 23:17 America/New_York
 
 A bounded private Netlify build check used the existing build credentials without exposing them. At 2026-10-05T03:17:23.747Z, both intake runtime GETs returned HTTP 200: V2 enabled, dispatchPaused false, agreementEnabled false, idle, all six receipt counts zero. Both Candidate and Client intake forms have exactly one webhook to the respective existing canonical adapter, with no duplicate destination. Representation and Client Agreement forms each have zero webhooks. Client Agreement still has zero submissions. This supersedes the earlier direct connector-value 401 limitation: the actual build/runtime credentials work; the values exposed by the connector were not usable for direct authentication.
