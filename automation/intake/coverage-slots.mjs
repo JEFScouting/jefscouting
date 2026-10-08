@@ -27,7 +27,13 @@ export async function fillMissingStaffingSlots(requestId,base,{exclusiveClaim,qa
     !Number.isInteger(count)||count<1||count>500||!event||!role||!location||!/^\d{4}-\d{2}-\d{2}$/.test(day||'')||!Number.isFinite(Date.parse(start))||!Number.isFinite(Date.parse(end))||Date.parse(end)<=Date.parse(start)||!Number.isInteger(assignment)||assignment<1||!Number.isInteger(block)||block<1)return hold('INCOMPLETE_OR_CONFLICTING_DEMAND_FACTS');
   const evidenceIds=ids(get(header,'coverage','Evidence Records'));
   if(!evidenceIds.length)return hold('REVIEWED_DEMAND_EVIDENCE_REQUIRED');
-  for(const id of evidenceIds){const e=await read('evidence',id);if(!e||get(e,'evidence','Verified')!==true||get(e,'evidence','Source Provenance Verified')!==true||choice(get(e,'evidence','Provenance Disposition'))!=='Accepted Source'||!ids(get(e,'evidence','Coverage Requests')).includes(header.id)||!ids(get(e,'evidence','Client Intake')).includes(requestId))return hold('REVIEWED_DEMAND_EVIDENCE_REQUIRED');}
+  const demandFields=['Coverage Record Type','Record Environment','Required Headcount','Source Event ID','Role','Shift Date','Start Time','End Time','Location','Assignment Sequence','Shift Block Sequence','Client Record','Source Client Intake','Evidence Records'];
+  const linkFields=new Set(['Client Record','Source Client Intake','Evidence Records']);
+  // Capture values now, not the record handle: native reads are fresh snapshots.
+  const demandVersion=r=>JSON.stringify(demandFields.map(f=>linkFields.has(f)?ids(get(r,'coverage',f)).sort():f==='Coverage Record Type'?choice(get(r,'coverage',f)):get(r,'coverage',f)));
+  const admittedDemand=demandVersion(header);
+  const reviewedEvidence=async()=>{for(const id of evidenceIds){const e=await read('evidence',id);if(!e||get(e,'evidence','Verified')!==true||get(e,'evidence','Source Provenance Verified')!==true||choice(get(e,'evidence','Provenance Disposition'))!=='Accepted Source'||!ids(get(e,'evidence','Coverage Requests')).includes(header.id)||!ids(get(e,'evidence','Client Intake')).includes(requestId))return false;}return true;};
+  if(!await reviewedEvidence())return hold('REVIEWED_DEMAND_EVIDENCE_REQUIRED');
   const children=allCoverage.filter(r=>choice(get(r,'coverage','Coverage Record Type'))==='Staffing Slot Source'&&(ids(get(r,'coverage','Parent Demand Coverage')).includes(header.id)||get(r,'coverage','Source Event ID')===event));
   const groups=new Map();
   for(const r of children){const seq=get(r,'coverage','Assignment Sequence')||1,shift=get(r,'coverage','Shift Block Sequence')||1,num=get(r,'coverage','Worker Slot Number');if(seq!==assignment||shift!==block)continue;const list=groups.get(num)||[];list.push(r);groups.set(num,list);}
@@ -37,7 +43,9 @@ export async function fillMissingStaffingSlots(requestId,base,{exclusiveClaim,qa
   for(let number=1;number<=count;number++){
     if(!await exclusiveClaim(`${requestId}|staffing-slots`))return {...hold('EXCLUSIVE_CLAIM_LOST'),created,reused};
     request=await read('intake',requestId);if(!valid(request)||ids(get(request,'intake','Converted Client'))[0]!==clientId)return {...hold('COMMERCIAL_AUTHORITY_CHANGED'),created,reused};
-    const live=await read('coverage',header.id);if(get(live,'coverage','Required Headcount')!==count||Object.entries(expected).some(([f,v])=>f!=='Source Client Intake'&&f!=='Parent Demand Coverage'&&f!=='Assignment Sequence'&&f!=='Shift Block Sequence'&&(Array.isArray(v)?JSON.stringify(ids(get(live,'coverage',f)))!==JSON.stringify(ids(v)):get(live,'coverage',f)!==v)))return {...hold('DEMAND_CHANGED_BEFORE_WRITE'),created,reused};
+    const live=await read('coverage',header.id);
+    if(!live||demandVersion(live)!==admittedDemand)return {...hold('DEMAND_CHANGED_BEFORE_WRITE'),created,reused};
+    if(!await reviewedEvidence())return {...hold('SOURCE_EVIDENCE_CHANGED_BEFORE_WRITE'),created,reused};
     if(groups.has(number)){reused.push(groups.get(number)[0].id);continue;}
     const values={...expected,'Coverage Request':`${qa?'TEST-':''}${role} | ${day} | Slot ${number}`,'Coverage Record Type':{name:'Staffing Slot Source'},'Object ID':`${qa?'TEST-':''}SLOT|${header.id}|${assignment}|${block}|${number}`,'Coverage Group / Batch ID':event,'Worker Slot Number':number,'Attendance Outcome':{name:'Pending'},'Evidence Records':evidenceIds.map(id=>({id}))};
     const id=await table('coverage').createRecordAsync(Object.fromEntries(Object.entries(values).map(([f,v])=>[field('coverage',f),v]))),r=await read('coverage',id);
