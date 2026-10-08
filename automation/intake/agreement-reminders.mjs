@@ -11,6 +11,7 @@ export function reminderDecision(candidate, provider, now) {
   if (['Signed', 'Declined', 'Not Applicable'].includes(status(candidate['Candidate Agreement Status']))) return { disposition: 'STOP' };
   if (provider?.candidateId !== candidate.id || provider.complete !== true || !Array.isArray(provider.effects)) return hold('PROVIDER_READBACK_REQUIRED');
   if (provider.effects.some(e => !steps.includes(e.step) || e.key !== `${candidate.id}|agreement|${e.step}` || !['sent','not_sent'].includes(e.outcome))) return hold('PROVIDER_OUTCOME_UNCERTAIN');
+  if (steps.some(step => provider.effects.filter(e => e.step === step).length !== 1)) return hold('EXACT_EFFECT_READBACK_REQUIRED');
   const current = millis(now);
   if (!Number.isFinite(current)) return hold('CURRENT_TIME_INVALID');
   let prior = null;
@@ -51,7 +52,19 @@ export async function executeReminder(candidateId,deps) {
   const required=['readCandidate','readProvider','now','readApprovedPayload','claimEffect','cancelClaim','markSending','sendApprovedPayload','markUnknown','persistSendEvidence','markSent','writeCandidateTimestamp','verifyCandidateTimestamp'];
   if(required.some(k=>typeof deps?.[k]!=='function'))return hold('GOVERNED_EXECUTOR_REQUIRED');
   let candidate=await deps.readCandidate(candidateId),provider=await deps.readProvider(candidateId);
+  if(candidate?.id!==candidateId)return hold('EXACT_CANDIDATE_REQUIRED');
   let decision=reminderDecision(candidate,provider,deps.now());
+  const approvedFor=(payload,step,key)=>payload?.approved===true&&payload.candidateId===candidateId&&payload.step===step&&payload.key===key&&payload.recipient===candidate.Email&&payload.trackedLink===candidate['Tracked Representation Agreement Link']&&typeof payload.version==='string'&&payload.version.length>0&&typeof payload.body==='string'&&payload.body.includes(payload.trackedLink);
+  // A copied timestamp cannot establish the prior invitation. Require the same
+  // recipient, tracked link and reviewed payload version as the provider proof.
+  const historyConfirmed=async()=>{
+    for(const effect of provider.effects.filter(e=>e.outcome==='sent')) {
+      const payload=await deps.readApprovedPayload(candidateId,effect.step);
+      if(!effect.messageId||!effect.threadId||!approvedFor(payload,effect.step,effect.key)||effect.recipient!==payload.recipient||effect.payloadVersion!==payload.version||effect.trackedLink!==payload.trackedLink)return false;
+    }
+    return true;
+  };
+  if(['DUE','RECONCILE'].includes(decision.disposition)&&!await historyConfirmed())return hold('PROVIDER_SEND_READBACK_UNCONFIRMED');
   if(decision.disposition==='RECONCILE'){
     const proof=provider.effects.filter(e=>e.key===decision.key&&e.outcome==='sent');
     if(proof.length!==1||!proof[0].messageId||!proof[0].threadId||proof[0].recipient!==candidate.Email)return hold('PROVIDER_SEND_READBACK_UNCONFIRMED');
@@ -62,13 +75,16 @@ export async function executeReminder(candidateId,deps) {
     return {...decision,disposition:'RECONCILED'};
   }
   if(decision.disposition!=='DUE')return decision;
-  const approved=payload=>payload?.approved===true&&payload.candidateId===candidateId&&payload.step===decision.step&&payload.key===decision.key&&payload.recipient===candidate.Email&&payload.trackedLink===candidate['Tracked Representation Agreement Link']&&typeof payload.version==='string'&&payload.version.length>0&&typeof payload.body==='string'&&payload.body.includes(payload.trackedLink);
+  const approved=payload=>approvedFor(payload,decision.step,decision.key);
   const payload=await deps.readApprovedPayload(candidateId,decision.step);
   if(!approved(payload))return hold('EXACT_APPROVED_TRACKED_PAYLOAD_REQUIRED');
   const claim=await deps.claimEffect(decision.key,payload.version);
   if(claim?.status!=='claimed'||claim.key!==decision.key||!claim.claimId)return hold('EFFECT_ALREADY_CLAIMED_OR_UNCERTAIN');
   candidate=await deps.readCandidate(candidateId);provider=await deps.readProvider(candidateId);
   const fresh=reminderDecision(candidate,provider,deps.now()),freshPayload=await deps.readApprovedPayload(candidateId,decision.step);
+  if(fresh.disposition==='DUE'&&!await historyConfirmed()){
+    await deps.cancelClaim(claim);return hold('PROVIDER_SEND_READBACK_UNCONFIRMED');
+  }
   if(fresh.disposition!=='DUE'||fresh.key!==decision.key||!approved(freshPayload)||JSON.stringify(freshPayload)!==JSON.stringify(payload)){
     await deps.cancelClaim(claim);
     return fresh.disposition==='DUE'?hold('APPROVED_PAYLOAD_CHANGED'):fresh;
