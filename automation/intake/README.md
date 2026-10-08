@@ -4,6 +4,17 @@ Status: IMPLEMENTED IN CODE; LIVE END-TO-END CERTIFICATION PENDING. This is not 
 
 
 
+
+## P2 existing-writer safety repair — 2026-10-07 evening (America/New_York)
+
+Continued independently while P5 awaits its source/execution contract. This is maintenance of the existing intake-triggered P2 writer, not implementation of a new non-GREEN event bridge or reopening Candidate/Client application intake.
+
+A demonstrated defect allowed slot creation after admission even if source approval was revoked or the Demand Header's assignment sequence, shift block, source request, Evidence identity or environment changed. Seven targeted regression tests failed against the prior writer. The writer now captures all admitted demand inputs, rereads the exact header and source verification before each slot effect, and returns DEMAND_CHANGED_BEFORE_WRITE or SOURCE_EVIDENCE_CHANGED_BEFORE_WRITE with any completed partial IDs. A source revocation after the first slot stops the next write; after source review is restored, exact replay reuses that first slot and creates only the remaining slot. No partial records are deleted.
+
+Existing PR36 code commits: 0f12abc0a0523d8a0f5d2f67684ba662a706f7c8 (writer), 962d8520230962ea6da51e01c6bef76170bd2519 (regressions), 95749203beac25008a56fb8e434c5ac4a0d3afa7 (generated native script). Independent remote reads match all three local files. Full local validation: 155 tests PASS, strict TypeScript PASS, generated build PASS, whitespace PASS. These are local/simulated source-change and recovery proofs, not a deployed provider trigger canary.
+
+The original Client native automation wflwGGOx0v1PEr6m8 has a valid reversible draft with the regenerated 78,331-character script; save action actTCvFi4Lq3GhehF. Independent readback confirms byte equality, unchanged receiptId/token input mapping, unchanged original trigger, and unchanged published 77,733-character script. No new automation, endpoint, queue, flag, schema or runtime was created. Human review/apply remains the exact existing Airtable activation boundary; matching transport release and the full bridge acceptance remain separate. Do not apply or mark P2 complete merely because this safety repair passes tests.
+
 ## P5 feasibility readback — 2026-10-07 19:28 America/New_York
 
 This pass executes the first feasibility step of the Bridge Map. It is not a production writer or a new outcome contract. P5 remains CONDITIONAL for the following two independently established bridge dependencies, not because no eligible production event exists.
