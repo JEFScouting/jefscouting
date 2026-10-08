@@ -36,3 +36,21 @@ test('P3 future/endless shifts cannot create finance drafts',async()=>{const f=a
 test('P3 lost exclusive claim prevents any money effect',async()=>{const f=await completed();let reads=0;await assert.rejects(prepareFinanceDrafts(f.coverageId,f.b,{qa:true,exclusiveClaim:async()=>++reads===1}),/EXCLUSIVE_CLAIM_LOST/);assert.equal(f.b.data.payroll.size,0);});
 test('P3 Paid historical object stays protected without state/amount changes',async()=>{const f=await completed();const r=await prepareFinanceDrafts(f.coverageId,f.b,ctx);const p=f.b.data.payroll.get(r.payrollId);p['Worker Payment Status']={name:'Paid'};const before=structuredClone(p);assert.equal((await prepareFinanceDrafts(f.coverageId,f.b,ctx)).reason,'PROTECTED_OR_CONFLICTING_MONEY_OBJECT');assert.deepEqual(p,before);});
 test('P3 source Evidence revoked after plan stops before money effect',async()=>{const f=await completed();let claims=0;await assert.rejects(prepareFinanceDrafts(f.coverageId,f.b,{...ctx,exclusiveClaim:async()=>{if(++claims===2)f.b.data.evidence.get(f.evidenceId).Verified=false;return true;}}),/SOURCE_EVIDENCE_CHANGED_DURING_WRITE/);assert.equal(f.b.data.payroll.size,0);});
+for(const [name,field,value] of [
+ ['source content','Notes','Corrected actual time claim'],
+ ['source URL','File Link','https://example.invalid/revised-time'],
+ ['source attachment','Attachment',[{id:'attRevised',url:'https://example.invalid/revised'}]],
+ ['source identity','Related Object ID','recOtherScope01'],
+ ['person scope','Workers',[{id:'recOtherWorker1'}]],
+])test('P3 '+name+' changed with approvals still true stops before first money effect',async()=>{
+ const f=await completed();let claims=0;
+ await assert.rejects(prepareFinanceDrafts(f.coverageId,f.b,{...ctx,exclusiveClaim:async()=>{if(++claims===2)f.b.data.evidence.get(f.evidenceId)[field]=value;return true;}}),/SOURCE_EVIDENCE_CHANGED_DURING_WRITE/);
+ for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,0);
+});
+test('P3 source correction after payroll stops subsequent drafts and replay reuses payroll',async()=>{
+ const f=await completed();let claims=0;
+ await assert.rejects(prepareFinanceDrafts(f.coverageId,f.b,{...ctx,exclusiveClaim:async()=>{if(++claims===3)f.b.data.evidence.get(f.evidenceId).Notes='Reviewed correction';return true;}}),/SOURCE_EVIDENCE_CHANGED_DURING_WRITE/);
+ assert.equal(f.b.data.payroll.size,1);assert.equal(f.b.data.invoices.size,0);
+ const payrollId=[...f.b.data.payroll.keys()][0];const r=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.equal(r.payrollId,payrollId);for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);
+});
