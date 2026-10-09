@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { FORMS, REPRESENTATION_FORM, CLIENT_AGREEMENT_FORM, evidenceVersion, normalizeSubmission, text, type Lane } from './intake-normalize.mts';
 
 type Store = {
@@ -30,7 +30,7 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
   const { store, env, log, now } = deps;
   const laneKey = `lane/${lane}`;
   const dispatchPaused = () => env(`JEF_${lane.toUpperCase()}_INTAKE_DISPATCH_PAUSED`) === 'true';
-  const validReceipt = (v: unknown) => typeof v === 'string' && new RegExp(`^receipt/${lane}/[0-9]{16,22}/[a-f0-9]{64}$`).test(v);
+  const validReceipt = (v: unknown) => typeof v === 'string' && new RegExp(`^receipt/${lane}/(?:[0-9]{16,22}|event/(?:staffingSlots|financeDrafts|bookingEvidence)/rec[A-Za-z0-9]{14})/[a-f0-9]{64}$`).test(v);
   const authorized = () => !!env('JOTFORM_ADMIN_SECRET') && equal(req.headers.get('authorization'), `Bearer ${env('JOTFORM_ADMIN_SECRET')}`);
   const webhook = () => {
     if (env(`JEF_${lane.toUpperCase()}_INTAKE_V2_ENABLED`) !== 'true') throw new Error('INTAKE_NOT_ENABLED');
@@ -139,6 +139,19 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
     if ((req.headers.get('content-type') || '').includes('application/json')) {
       let body: any;
       try { body = await req.json(); } catch { return response(400, { error: 'INVALID_JSON' }); }
+      if(body?.action==='sourceEvent') {
+        if(!authorized())return response(401,{error:'UNAUTHORIZED'});
+        if(lane!=='client'||!['staffingSlots','financeDrafts','bookingEvidence'].includes(body.operation)||!/^rec[A-Za-z0-9]{14}$/.test(body.recordId||'')||!Array.isArray(body.snapshot)||JSON.stringify(body.snapshot).length>100000)return response(400,{error:'INVALID_SOURCE_EVENT'});
+        webhook();
+        const version=createHash('sha256').update(JSON.stringify(body.snapshot)).digest('hex');
+        receiptId=`receipt/${lane}/event/${body.operation}/${body.recordId}/${version}`;
+        let existing=await read(store,receiptId);
+        if(!existing){await cas(store,receiptId,{status:'queued',envelope:{kind:'operation',lane,operation:body.operation,recordId:body.recordId,snapshot:body.snapshot,version,sourceKey:`${body.operation}|${body.recordId}|${version}`,receivedAt:now()}});existing=await read(store,receiptId);}
+        if(!existing)throw new Error('RECEIPT_WRITE_UNCONFIRMED');
+        if(['done','exception'].includes(existing.data.status))return response(200,{receiptId,replay:true,status:existing.data.status});
+        if(existing.data.status==='failed'&&!await cas(store,receiptId,{...existing.data,status:'queued',token:null,consumerToken:null},existing))return response(409,{error:'RETRY_RACE'});
+        return response(202,{receiptId,status:await dispatch(receiptId)});
+      }
       if (!['claim', 'assertClaim', 'complete', 'retry'].includes(body?.action) || !validReceipt(body.receiptId)) return response(400, { error: 'INVALID_CONTROL_REQUEST' });
       receiptId = body.receiptId;
       const receipt = await read(store, receiptId);
