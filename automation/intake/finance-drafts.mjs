@@ -19,7 +19,8 @@ export async function prepareFinanceDrafts(coverageId,base,{exclusiveClaim,qa=fa
   const read=async(t,id)=>table(t).selectRecordAsync(id);
   const all=async(t,fields)=>(await table(t).selectRecordsAsync({fields:fields.map(f=>field(t,f))})).records;
   const encode=(t,fields)=>Object.fromEntries(Object.entries(fields).map(([f,v])=>[field(t,f),v]));
-  const asObject=(r,t)=>({id:r.id,...Object.fromEntries(Object.keys(schema[t].fields).map(f=>[f,get(r,t,f)]))});
+  const coverageSourceFields=['Coverage Record Type','Record Environment','Worker Records','Client Record','Evidence Records','Attendance Outcome','Time Verification Status','Hours Evidence Verified','Verified Hours','Rate Evidence Status','Approved Worker Rate Snapshot','Approved Client Rate Snapshot','Shift Date','Role','End Time','Payroll Cycle Link','Invoice Link','Finance Control Records'];
+  const asObject=(r,t)=>({id:r.id,...Object.fromEntries(coverageSourceFields.map(f=>[f,get(r,t,f)]))});
   const verify=async(t,id,values)=>{const r=await read(t,id);if(!r)throw new Error('READBACK_MISSING');for(const[f,v]of Object.entries(values)){const current=get(r,t,f);const ok=Array.isArray(v)?JSON.stringify(ids(current).sort())===JSON.stringify(ids(v).sort()):v?.name?choice(current)===v.name:JSON.stringify(current??null)===JSON.stringify(v??null);if(!ok)throw new Error('DRAFT_READBACK_FAILED:'+f);}return r;};
   const evidenceVersions=new Map();
   const evidenceSourceFields=['Evidence ID','Evidence Type','Related Module','Related Object ID','Evidence Date','File Link','Attachment','Notes','Verified','Source Provenance Verified','Provenance Disposition','Coverage Requests','Workers','Candidates','Record Environment'];
