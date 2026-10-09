@@ -989,7 +989,8 @@ async function prepareFinanceDrafts(coverageId,base,{exclusiveClaim,qa=false,now
   const read=async(t,id)=>table(t).selectRecordAsync(id);
   const all=async(t,fields)=>(await table(t).selectRecordsAsync({fields:fields.map(f=>field(t,f))})).records;
   const encode=(t,fields)=>Object.fromEntries(Object.entries(fields).map(([f,v])=>[field(t,f),v]));
-  const asObject=(r,t)=>({id:r.id,...Object.fromEntries(Object.keys(schema[t].fields).map(f=>[f,get(r,t,f)]))});
+  const coverageSourceFields=['Coverage Record Type','Record Environment','Worker Records','Client Record','Evidence Records','Attendance Outcome','Time Verification Status','Hours Evidence Verified','Verified Hours','Rate Evidence Status','Approved Worker Rate Snapshot','Approved Client Rate Snapshot','Shift Date','Role','End Time','Payroll Cycle Link','Invoice Link','Finance Control Records'];
+  const asObject=(r,t)=>({id:r.id,...Object.fromEntries(coverageSourceFields.map(f=>[f,get(r,t,f)]))});
   const verify=async(t,id,values)=>{const r=await read(t,id);if(!r)throw new Error('READBACK_MISSING');for(const[f,v]of Object.entries(values)){const current=get(r,t,f);const ok=Array.isArray(v)?JSON.stringify(ids(current).sort())===JSON.stringify(ids(v).sort()):v?.name?choice(current)===v.name:JSON.stringify(current??null)===JSON.stringify(v??null);if(!ok)throw new Error('DRAFT_READBACK_FAILED:'+f);}return r;};
   const evidenceVersions=new Map();
   const evidenceSourceFields=['Evidence ID','Evidence Type','Related Module','Related Object ID','Evidence Date','File Link','Attachment','Notes','Verified','Source Provenance Verified','Provenance Disposition','Coverage Requests','Workers','Candidates','Record Environment'];
@@ -1080,6 +1081,148 @@ async function runIntakeHandoffs(envelope,result,base,assertClaim) {
 }
 
 return {runIntakeHandoffs};})();
+const {linkBookingEvidence}=(()=>{
+
+// Link the reviewed artifact itself. Never manufacture attendance, hours or a review.
+async function linkBookingEvidence(evidenceId, base) {
+  const tables = { ...schema, ...operationsSchema };
+  const readFields = {
+    evidence: ['Record Environment','Evidence ID','Evidence Type','Related Module','Related Object ID','Evidence Date','Verified','Source Provenance Verified','Provenance Disposition','File Link','Attachment','Notes','Worker Bookings','Coverage Requests','Workers','Candidates'],
+    bookings: ['Coverage Slot','Worker','Candidate','Booking Status','Record Environment','Evidence Records'],
+    coverage: ['Record Environment','Object ID'],
+    workers: ['Record Environment','Source Candidate Record','Team Member Number'],
+    candidates: ['Record Environment','Canonical Candidate Record','Promoted Worker','Team Member Number'],
+  };
+  const read = async (table, id) => {
+    const record = await base.getTable(tables[table].id).selectRecordAsync(id);
+    if (!record) return null;
+    return Object.fromEntries(readFields[table].map(name => [name, record.getCellValue(tables[table].fields[name])]));
+  };
+  const ids = value => (value || []).map(link => link.id).sort();
+  const select = value => value?.name || value || '';
+  const one = value => ids(value).length === 1 ? ids(value)[0] : null;
+  const hold = reason => ({ status: 'HOLD', reason, evidenceId });
+  async function plan() {
+    const evidence = await read('evidence', evidenceId);
+    if (!evidence) return hold('SOURCE_MISSING');
+    if (evidence.Verified !== true || evidence['Source Provenance Verified'] !== true ||
+      !['Accepted Source', 'Canonical Source', 'Verified'].includes(select(evidence['Provenance Disposition']))) return hold('SOURCE_NOT_REVIEWED');
+    if (select(evidence['Related Module']) !== 'Assignments Shifts' ||
+      !['Message', 'Screenshot', 'Homebase Proof', 'Operational Evidence', 'Gmail Source', 'Email / Message', 'Email', 'Gmail', 'Email Evidence', 'Source Document', 'Document / PDF', 'Other Verified Evidence'].includes(select(evidence['Evidence Type'])) ||
+      !(evidence['File Link'] || evidence.Attachment?.length)) return hold('SOURCE_ARTIFACT_REQUIRED');
+    const bookingId = one(evidence['Worker Bookings']);
+    const coverageId = one(evidence['Coverage Requests']);
+    if (!bookingId || !coverageId || evidence['Related Object ID'] !== bookingId) return hold('SOURCE_SCOPE_AMBIGUOUS');
+    const booking = await read('bookings', bookingId);
+    const coverage = await read('coverage', coverageId);
+    if (!booking || !coverage || one(booking['Coverage Slot']) !== coverageId ||
+      !ids(booking['Evidence Records']).includes(evidenceId)) return hold('BOOKING_SCOPE_MISMATCH');
+    if (!['Completed', 'Cancelled', 'Released', 'Replaced'].includes(select(booking['Booking Status']))) return hold('BOOKING_NOT_TERMINAL');
+    const workerIds = ids(booking.Worker), candidateIds = ids(booking.Candidate);
+    if (workerIds.length > 1 || candidateIds.length > 1 || (!workerIds.length && !candidateIds.length)) return hold('PERSON_AMBIGUOUS');
+    const worker = workerIds.length ? await read('workers', workerIds[0]) : null;
+    const candidate = candidateIds.length ? await read('candidates', candidateIds[0]) : null;
+    if ((workerIds.length && !worker) || (candidateIds.length && !candidate)) return hold('PERSON_MISSING');
+    if (candidate && ids(candidate['Canonical Candidate Record']).length) return hold('CANDIDATE_REDIRECT');
+    if (worker && candidate && (one(worker['Source Candidate Record']) !== candidateIds[0] ||
+      one(candidate['Promoted Worker']) !== workerIds[0] || !worker['Team Member Number'] ||
+      worker['Team Member Number'] !== candidate['Team Member Number'])) return hold('IDENTITY_MISMATCH');
+    const environment = select(evidence['Record Environment']);
+    if (!['Production / Live', 'QA / Test'].includes(environment) || [booking, coverage, worker, candidate].filter(Boolean).some(r => select(r['Record Environment']) !== environment)) return hold('ENVIRONMENT_MISMATCH');
+    const expected = { Workers: workerIds, Candidates: candidateIds };
+    for (const [field, wanted] of Object.entries(expected)) {
+      const current = ids(evidence[field]);
+      if (current.length && JSON.stringify(current) !== JSON.stringify(wanted)) return hold('EXISTING_PERSON_CONFLICT');
+    }
+    // Capture scalar snapshots now; Airtable record objects can otherwise reflect later changes.
+    const fingerprint = JSON.stringify([evidenceId, ...[evidence, booking, coverage, worker, candidate].map(r => r && Object.fromEntries(Object.entries(r).filter(([name]) => !['Workers', 'Candidates', 'Evidence Records'].includes(name))))]);
+    return { status: 'READY', evidence, expected, fingerprint, bookingId, coverageId };
+  }
+  const initial = await plan();
+  if (initial.status === 'HOLD') return initial;
+  const current = await plan();
+  if (current.status === 'HOLD') return current;
+  if (initial.fingerprint !== current.fingerprint) return hold('SOURCE_CHANGED');
+  const fields = {};
+  for (const [field, wanted] of Object.entries(current.expected)) {
+    if (JSON.stringify(ids(current.evidence[field])) !== JSON.stringify(wanted)) fields[schema.evidence.fields[field]] = wanted.map(id => ({ id }));
+  }
+  if (Object.keys(fields).length) await base.getTable(schema.evidence.id).updateRecordAsync(evidenceId, fields);
+  const readback = await plan();
+  if (readback.status === 'HOLD' || readback.fingerprint !== current.fingerprint) return hold('READBACK_REVIEW_REQUIRED');
+  if (Object.entries(current.expected).some(([field, wanted]) => JSON.stringify(ids(readback.evidence[field])) !== JSON.stringify(wanted))) return hold('LINK_READBACK_FAILED');
+  return { status: Object.keys(fields).length ? 'LINKED' : 'REPLAY_NO_WRITE', evidenceId, bookingId: current.bookingId, personIds: current.expected };
+}
+
+return {linkBookingEvidence};})();
+
+// Only source fields are hashed. Effects/reciprocal backlinks cannot wake loops.
+const eventSources = {
+  staffingSlots: { table: 'coverage', fields: ['Record Environment','Coverage Record Type','Source Client Intake','Client Record','Required Headcount','Source Event ID','Role','Shift Date','Start Time','End Time','Location','Assignment Sequence','Shift Block Sequence','Evidence Records'] },
+  financeDrafts: { table: 'coverage', fields: ['Record Environment','Coverage Record Type','Source Client Intake','Worker Records','Client Record','Attendance Outcome','Time Verification Status','Hours Evidence Verified','Verified Hours','Rate Evidence Status','Approved Worker Rate Snapshot','Approved Client Rate Snapshot','Shift Date','Role','End Time','Evidence Records'] },
+  bookingEvidence: { table: 'evidence', fields: ['Record Environment','Evidence ID','Evidence Type','Related Module','Related Object ID','Evidence Date','Verified','Source Provenance Verified','Provenance Disposition','File Link','Attachment','Notes','Worker Bookings','Coverage Requests'] },
+};
+async function sourceEventSnapshot(base, operation, recordId) {
+  const source=eventSources[operation];
+  if(!source||!/^rec[A-Za-z0-9]{14}$/.test(recordId||'')||base.id!=='appveHEw1HrXr8nD1')return null;
+  const table={...schema,...operationsSchema}[source.table];
+  const record=await base.getTable(table.id).selectRecordAsync(recordId);
+  if(!record)return null;
+  const canonical=value=>Array.isArray(value)?value.map(canonical).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))):value&&typeof value==='object'?(value.id?{id:value.id,...(value.url?{url:value.url}:{})}:value.name?value.name:value):value;
+  const snapshot=source.fields.map(name=>[name,canonical(record.getCellValue(table.fields[name]))]);
+  if(operation==='staffingSlots'){
+    const requests=record.getCellValue(table.fields['Source Client Intake'])||[];
+    if(requests.length===1){
+      const request=await base.getTable(schema.intake.id).selectRecordAsync(requests[0].id);
+      snapshot.push(['Request Authority',request?['Record Environment','Converted Client','CLI-01A Commercial / Service Authorization Gate'].map(name=>[name,canonical(request.getCellValue(schema.intake.fields[name]))]):null]);
+    }
+  }
+  if(operation!=='bookingEvidence'){
+    const linked=record.getCellValue(table.fields['Evidence Records'])||[];
+    const proof=[];
+    for(const link of [...linked].sort((a,b)=>a.id.localeCompare(b.id))){
+      const e=await base.getTable(schema.evidence.id).selectRecordAsync(link.id);
+      const fields=['Verified','Source Provenance Verified','Provenance Disposition','Related Object ID','File Link','Attachment','Notes','Coverage Requests','Client Intake'];
+      proof.push([link.id,e?fields.map(name=>[name,name==='Coverage Requests'?(e.getCellValue(schema.evidence.fields[name])||[]).some(x=>x.id===recordId):canonical(e.getCellValue(schema.evidence.fields[name]))]):null]);
+    }
+    snapshot.push(['Reviewed Source',proof]);
+  }else{
+    const linked=record.getCellValue(table.fields['Worker Bookings'])||[];
+    const bookings=[];
+    for(const link of [...linked].sort((a,b)=>a.id.localeCompare(b.id))){
+      const b=await base.getTable(operationsSchema.bookings.id).selectRecordAsync(link.id);
+      bookings.push([link.id,b?['Booking Status','Coverage Slot','Worker','Candidate','Record Environment'].map(name=>[name,canonical(b.getCellValue(operationsSchema.bookings.fields[name]))]):null]);
+    }
+    snapshot.push(['Booking Source',bookings]);
+  }
+  return snapshot;
+}
+async function runSourceEvent(envelope,base,assertClaim) {
+  const hold=code=>({status:'exception',code,recordIds:[envelope.recordId]});
+  if(envelope?.kind!=='operation'||envelope.lane!=='client'||!eventSources[envelope.operation])return hold('INVALID_SOURCE_EVENT');
+  if(typeof assertClaim!=='function'||!await assertClaim())return hold('EXCLUSIVE_NATIVE_CLAIM_REQUIRED');
+  const snapshot=await sourceEventSnapshot(base,envelope.operation,envelope.recordId);
+  if(!snapshot||JSON.stringify(snapshot)!==JSON.stringify(envelope.snapshot))return hold('SOURCE_VERSION_CHANGED');
+  const environment=snapshot.find(([name])=>name==='Record Environment')?.[1];
+  if(!['Production / Live','QA / Test'].includes(environment))return hold('ENVIRONMENT_MISMATCH');
+  const qa=environment==='QA / Test';
+  let effect;
+  if(envelope.operation==='bookingEvidence')effect=await linkBookingEvidence(envelope.recordId,base);
+  else {
+    let target=envelope.recordId;
+    if(envelope.operation==='staffingSlots'){
+      const links=snapshot.find(([name])=>name==='Source Client Intake')?.[1];
+      if(!Array.isArray(links)||links.length!==1)return hold('EXACT_REQUEST_REQUIRED');
+      target=links[0].id;
+    }
+    const key=`${target}|${envelope.operation==='staffingSlots'?'staffing-slots':'finance-drafts'}`;
+    const exclusiveClaim=async effectKey=>effectKey===key&&await assertClaim();
+    effect=await (envelope.operation==='staffingSlots'?fillMissingStaffingSlots:prepareFinanceDrafts)(target,base,{exclusiveClaim,qa});
+  }
+  if(effect.status==='HOLD'||effect.disposition==='HOLD')return {...hold(effect.reason),operationReadback:effect};
+  return {status:'done',code:effect.status||effect.disposition,recordIds:[envelope.recordId],operationReadback:effect};
+}
+
 // Inputs: receiptId and token, each mapped from the existing webhook body.
 const cfg=input.config();
 const lane="client";
@@ -1093,9 +1236,13 @@ const claim=await call('claim');
 if(claim.skip){ output.set('status','REPLAY_NO_WRITE'); } else {
  if(claim.envelope.lane!==lane) throw new Error('LANE_MISMATCH');
  let result;
- try { result=await reconcile(claim.envelope,base);
+ try { const assertClaim=async()=>{const proof=await call('assertClaim',{consumerToken:claim.consumerToken});return proof.held===true;};
+ result=claim.envelope.kind==='operation'?await runSourceEvent(claim.envelope,base,assertClaim):await reconcile(claim.envelope,base);
+ if(claim.envelope.kind==='operation')output.set('operationReadback',JSON.stringify(result.operationReadback||result));
+ else {
  const handoff=await runIntakeHandoffs(claim.envelope,result,base,async()=>{const proof=await call('assertClaim',{consumerToken:claim.consumerToken});return proof.held===true;});
  output.set('handoffReadback',JSON.stringify(handoff));
+ }
  } catch(error) {
   await call('complete',{consumerToken:claim.consumerToken,status:'failed',code:'AIRTABLE_RECONCILIATION_FAILED'});
   throw new Error('AIRTABLE_RECONCILIATION_FAILED');
