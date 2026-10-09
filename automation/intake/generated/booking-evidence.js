@@ -589,10 +589,17 @@ const {linkBookingEvidence}=(()=>{
 // Link the reviewed artifact itself. Never manufacture attendance, hours or a review.
 async function linkBookingEvidence(evidenceId, base) {
   const tables = { ...schema, ...operationsSchema };
+  const readFields = {
+    evidence: ['Record Environment','Evidence ID','Evidence Type','Related Module','Related Object ID','Evidence Date','Verified','Source Provenance Verified','Provenance Disposition','File Link','Attachment','Notes','Worker Bookings','Coverage Requests','Workers','Candidates'],
+    bookings: ['Coverage Slot','Worker','Candidate','Booking Status','Record Environment','Evidence Records'],
+    coverage: ['Record Environment','Object ID'],
+    workers: ['Record Environment','Source Candidate Record','Team Member Number'],
+    candidates: ['Record Environment','Canonical Candidate Record','Promoted Worker','Team Member Number'],
+  };
   const read = async (table, id) => {
     const record = await base.getTable(tables[table].id).selectRecordAsync(id);
     if (!record) return null;
-    return Object.fromEntries(Object.entries(tables[table].fields).map(([name, id]) => [name, record.getCellValue(id)]));
+    return Object.fromEntries(readFields[table].map(name => [name, record.getCellValue(tables[table].fields[name])]));
   };
   const ids = value => (value || []).map(link => link.id).sort();
   const select = value => value?.name || value || '';
