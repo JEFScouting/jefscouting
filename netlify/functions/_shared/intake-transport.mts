@@ -1,5 +1,5 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { FORMS, evidenceVersion, normalizeSubmission, text, type Lane } from './intake-normalize.mts';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { FORMS, REPRESENTATION_FORM, CLIENT_AGREEMENT_FORM, evidenceVersion, normalizeSubmission, text, type Lane } from './intake-normalize.mts';
 
 type Store = {
   getWithMetadata: (key: string, options: any) => Promise<any>;
@@ -30,7 +30,7 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
   const { store, env, log, now } = deps;
   const laneKey = `lane/${lane}`;
   const dispatchPaused = () => env(`JEF_${lane.toUpperCase()}_INTAKE_DISPATCH_PAUSED`) === 'true';
-  const validReceipt = (v: unknown) => typeof v === 'string' && new RegExp(`^receipt/${lane}/[0-9]{16,22}/[a-f0-9]{64}$`).test(v);
+  const validReceipt = (v: unknown) => typeof v === 'string' && new RegExp(`^receipt/${lane}/(?:[0-9]{16,22}|event/(?:staffingSlots|financeDrafts|bookingEvidence)/rec[A-Za-z0-9]{14})/[a-f0-9]{64}$`).test(v);
   const authorized = () => !!env('JOTFORM_ADMIN_SECRET') && equal(req.headers.get('authorization'), `Bearer ${env('JOTFORM_ADMIN_SECRET')}`);
   const webhook = () => {
     if (env(`JEF_${lane.toUpperCase()}_INTAKE_V2_ENABLED`) !== 'true') throw new Error('INTAKE_NOT_ENABLED');
@@ -126,6 +126,7 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
         lane, state: slot?.data?.state || 'idle',
         enabled: env(`JEF_${lane.toUpperCase()}_INTAKE_V2_ENABLED`) === 'true',
         dispatchPaused: dispatchPaused(),
+        agreementEnabled: env(lane === 'candidate' ? 'JEF_REPRESENTATION_INTAKE_ENABLED' : 'JEF_CLIENT_AGREEMENT_INTAKE_ENABLED') === 'true',
         active: slot?.data?.state === 'active' ? inspect(slot.data.receiptId, await read(store, slot.data.receiptId)) : null,
         last: slot?.data?.lastReceiptId ? inspect(slot.data.lastReceiptId, await read(store, slot.data.lastReceiptId)) : null,
         receipt: selected ? inspect(selected, await read(store, selected)) : null,
@@ -138,7 +139,20 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
     if ((req.headers.get('content-type') || '').includes('application/json')) {
       let body: any;
       try { body = await req.json(); } catch { return response(400, { error: 'INVALID_JSON' }); }
-      if (!['claim', 'complete', 'retry'].includes(body?.action) || !validReceipt(body.receiptId)) return response(400, { error: 'INVALID_CONTROL_REQUEST' });
+      if(body?.action==='sourceEvent') {
+        if(!authorized())return response(401,{error:'UNAUTHORIZED'});
+        if(lane!=='client'||!['staffingSlots','financeDrafts','bookingEvidence'].includes(body.operation)||!/^rec[A-Za-z0-9]{14}$/.test(body.recordId||'')||!Array.isArray(body.snapshot)||JSON.stringify(body.snapshot).length>100000)return response(400,{error:'INVALID_SOURCE_EVENT'});
+        webhook();
+        const version=createHash('sha256').update(JSON.stringify(body.snapshot)).digest('hex');
+        receiptId=`receipt/${lane}/event/${body.operation}/${body.recordId}/${version}`;
+        let existing=await read(store,receiptId);
+        if(!existing){await cas(store,receiptId,{status:'queued',envelope:{kind:'operation',lane,operation:body.operation,recordId:body.recordId,snapshot:body.snapshot,version,sourceKey:`${body.operation}|${body.recordId}|${version}`,receivedAt:now()}});existing=await read(store,receiptId);}
+        if(!existing)throw new Error('RECEIPT_WRITE_UNCONFIRMED');
+        if(['done','exception'].includes(existing.data.status))return response(200,{receiptId,replay:true,status:existing.data.status});
+        if(existing.data.status==='failed'&&!await cas(store,receiptId,{...existing.data,status:'queued',token:null,consumerToken:null},existing))return response(409,{error:'RETRY_RACE'});
+        return response(202,{receiptId,status:await dispatch(receiptId)});
+      }
+      if (!['claim', 'assertClaim', 'complete', 'retry'].includes(body?.action) || !validReceipt(body.receiptId)) return response(400, { error: 'INVALID_CONTROL_REQUEST' });
       receiptId = body.receiptId;
       const receipt = await read(store, receiptId);
       if (body.action === 'retry') {
@@ -151,6 +165,15 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
       }
       if (!receipt || !equal(body.token, receipt.data.token)) return response(403, { error: 'INVALID_RECEIPT' });
       const slot = await read(store, laneKey);
+      if (body.action === 'assertClaim') {
+        // Read-only proof for the currently executing native writer. Never
+        // extends a claim, releases a lane or authorizes another receipt.
+        const held = receipt.data.status === 'claimed' &&
+          equal(body.consumerToken, receipt.data.consumerToken) &&
+          slot?.data?.state === 'active' && slot.data.receiptId === receiptId &&
+          equal(slot.data.token, body.token);
+        return response(held ? 200 : 409, { held });
+      }
       if (body.action === 'claim') {
         if (['done', 'exception'].includes(receipt.data.status)) return response(200, { skip: true, status: receipt.data.status });
         if (!slot || slot.data.receiptId !== receiptId || !equal(slot.data.token, body.token) || receipt.data.status !== 'dispatching') return response(409, { error: 'ALREADY_CLAIMED_OR_NOT_ACTIVE' });
@@ -178,11 +201,16 @@ export async function handleIntake(req: Request, lane: Lane, deps: Dependencies)
     try { form = await req.formData(); } catch { return response(400, { error: 'INVALID_FORM_DATA' }); }
     const submissionId = text(form.get('submissionID') ?? form.get('submission_id'));
     const formId = text(form.get('formID') ?? form.get('form_id'));
-    if (!/^\d{16,22}$/.test(submissionId) || formId !== FORMS[lane]) return response(400, { error: 'INVALID_SOURCE_IDENTITY' });
+    const representation = lane === 'candidate' && formId === REPRESENTATION_FORM;
+    const clientAgreement = lane === 'client' && formId === CLIENT_AGREEMENT_FORM;
+    if (!/^\d{16,22}$/.test(submissionId) || (!representation && !clientAgreement && formId !== FORMS[lane])) return response(400, { error: 'INVALID_SOURCE_IDENTITY' });
+    if (representation && env('JEF_REPRESENTATION_INTAKE_ENABLED') !== 'true') return response(503, { error: 'REPRESENTATION_NOT_ENABLED' });
+    if (clientAgreement && env('JEF_CLIENT_AGREEMENT_INTAKE_ENABLED') !== 'true') return response(503, { error: 'CLIENT_AGREEMENT_NOT_ENABLED' });
     const provider = await deps.fetch(`https://api.jotform.com/submission/${submissionId}`, { headers: { APIKEY: apiKey }, signal: AbortSignal.timeout(15000) });
     if (!provider.ok) return response(provider.status === 404 ? 400 : 503, { error: 'PROVIDER_LOOKUP_FAILED' });
     const body = await provider.json();
     if (body.responseCode !== 200 || body.content?.id !== submissionId) return response(503, { error: 'PROVIDER_RESPONSE_INVALID' });
+    if (String(body.content?.form_id) !== formId) return response(400, { error: 'PROVIDER_FORM_OR_STATUS_MISMATCH' });
     const envelope = normalizeSubmission(lane, body.content, now());
     const receiptPrefix = `receipt/${lane}/${submissionId}/`;
     receiptId = `${receiptPrefix}${envelope.version}`;

@@ -290,12 +290,12 @@ async function reconcile(envelope, base) {
     }
     return r;
   };
-  let issues=[...e.issues], recordIds=[], applied={};
+  let issues=[...e.issues], recordIds=[], applied={}, readback={};
   const evidenceRows=await rows('evidence',['Evidence ID','Related Object ID','Notes','Candidates','Client Intake','Clients','Provenance Disposition']);
-  const evidenceKey=`${e.qa?'TEST-':''}EVD-JOTFORM-${e.lane.toUpperCase()}-${e.submissionId}-${e.version.slice(0,16)}`;
+  const evidenceKey=`${e.qa?'TEST-':''}EVD-JOTFORM-${e.kind==='clientAgreement'?'CLIENT-AGREEMENT':e.kind==='representation'?'REPRESENTATION':e.lane.toUpperCase()}-${e.submissionId}-${e.version.slice(0,16)}`;
   let ev=evidenceRows.filter(r=>get(r,'evidence','Evidence ID')===evidenceKey);
   if(ev.length>1) throw new Error('DUPLICATE_SOURCE_EVIDENCE');
-  const payload = status => ({ protocol:e.protocol, sourceKey:e.sourceKey, version:e.version, status, observedAt:e.receivedAt, snapshot:e.snapshot, issues:[...new Set(issues)], recordIds, applied });
+  const payload = status => ({ protocol:e.protocol, sourceKey:e.sourceKey, version:e.version, status, observedAt:e.receivedAt, snapshot:e.snapshot, issues:[...new Set(issues)], recordIds, applied, readback });
   const sourceFields={
     'Evidence ID':evidenceKey,'Evidence Type':{name:e.qa?'System Test':'Source Document'},
     'Related Module':{name:e.lane==='candidate'?'Recruiting':'Client Intake'},
@@ -315,6 +315,105 @@ async function reconcile(envelope, base) {
   // A human disposition, work authorization, reliability, or readiness is never inferred.
   const sourceFatal=issues.some(x=>['FORM_VERSION_CHANGED','FORM_CODE_CHANGED','UNEXPECTED_ENVIRONMENT'].includes(x));
   if(sourceFatal) return finish('exception','SOURCE_CONTRACT_CHANGED');
+  if(e.kind==='clientAgreement') {
+    if(e.lane!=='client'||e.formId!=='262220234744045') throw new Error('INVALID_CLIENT_AGREEMENT_CONTEXT');
+    const a=e.clientAgreement;
+    const exactId=v=>typeof v==='string'&&v.length>0&&v.length<=200&&!/[\s<>]/.test(v);
+    const clientRows=await rows('clients',['NEXT Object ID','Client Name','Record Environment']);
+    const intakeRows=await rows('intake',['Request ID','Converted Client','Record Environment']);
+    // Both supplied IDs must resolve uniquely and the request's existing relation
+    // must already point to that exact account. Names/contacts cannot repair IDs.
+    const cm=clientRows.filter(r=>a?.clientId&&(r.id===a.clientId||get(r,'clients','NEXT Object ID')===a.clientId));
+    const im=intakeRows.filter(r=>a?.intakeId&&(r.id===a.intakeId||get(r,'intake','Request ID')===a.intakeId));
+    let client=cm.length===1?await fresh('clients',cm[0].id):null;
+    let intake=im.length===1?await fresh('intake',im[0].id):null;
+    const acknowledgment=a?.acknowledgment===true||a?.acknowledgment==='Yes'||a?.acknowledgment==='true';
+    const providerDate=value=>{
+      const d=typeof value==='object'&&value?`${value.year}-${String(value.month).padStart(2,'0')}-${String(value.day).padStart(2,'0')}`:str(value);
+      return /^\d{4}-\d{2}-\d{2}$/.test(d)&&!Number.isNaN(Date.parse(d))&&new Date(d).toISOString().slice(0,10)===d?d:null;
+    };
+    const signatureDate=providerDate(a?.signatureDate), effectiveDate=providerDate(a?.effectiveDate);
+    const current=links(get(client,'clients','Current Agreement Evidence'));
+    const status=choice(get(client,'clients','Commercial Agreement Status'));
+    const agreementCollision=evidenceRows.some(r=>{
+      try {
+        const notes=get(r,'evidence','Notes');
+        if(r.id===evidenceId||!str(notes).startsWith(machinePrefix)) return false;
+        const prior=JSON.parse(notes.slice(machinePrefix.length));
+        return prior.snapshot?.formId==='262220234744045'&&prior.snapshot?.answers?.['20']?.value===a?.agreementId&&
+          prior.snapshot?.submissionId!==e.submissionId;
+      } catch { return false; }
+    });
+    const invalid=issues.length>0||agreementCollision||!client||!intake||![a?.clientId,a?.intakeId,a?.agreementId].every(exactId)||
+      a.formCode!=='JF-CL-AGR-01'||a.formVersion!=='AGR-JEF-2026-v0.3'||
+      !acknowledgment||!/^https:\/\/[^\s]+$/.test(a.signature||'')||!signatureDate||!effectiveDate||
+      signatureDate>e.receivedAt.slice(0,10)||!e.person.name||!e.person.email||!a.signerTitle||!a.printedNameTitle||
+      !norm(e.client.business)||norm(e.client.business)!==norm(get(client,'clients','Client Name'))||
+      (get(client,'clients','Record Environment')==='QA / Test')!==e.qa||
+      (get(intake,'intake','Record Environment')==='QA / Test')!==e.qa||
+      !['Production','Live',...(e.qa?['QA / Test','QA','Test']:[])].includes(a.environment)||
+      stable(links(get(intake,'intake','Converted Client')))!==stable([client?.id])||
+      !['Existing Client — exact/strong match','New Client — sufficiently distinct'].includes(choice(get(intake,'intake','Client Identity Reconciliation')))||
+      ['Needs Review','Superseded','Terminated'].includes(status)||
+      current.length>1||(current.length===1&&current[0]!==evidenceId)||
+      (status==='Fully Signed'&&current[0]!==evidenceId)||
+      ['Exception','Superseded','Not Required'].includes(choice(get(intake,'intake','Agreement Control Status')));
+    if(invalid){issues.push('UNMATCHED_OR_UNVERIFIED_CLIENT_AGREEMENT');return finish('exception','CLIENT_AGREEMENT_REQUIRES_REVIEW');}
+    const patch={'Commercial Agreement Status':{name:'Fully Signed'},'Current Agreement Evidence':[{id:evidenceId}],
+      'Agreement Effective Date':effectiveDate,'Evidence Records':addLink(client,'clients','Evidence Records',evidenceId),
+      'Agreement History Evidence':addLink(client,'clients','Agreement History Evidence',evidenceId)};
+    await update('clients',client.id,patch);client=await verify('clients',client.id,patch);recordIds.push(client.id);
+    // Re-read after account write and before advancing the request seam.
+    intake=await fresh('intake',intake.id);client=await fresh('clients',client.id);
+    if(stable(links(get(intake,'intake','Converted Client')))!==stable([client.id])||
+      choice(get(client,'clients','Commercial Agreement Status'))!=='Fully Signed'||
+      stable(links(get(client,'clients','Current Agreement Evidence')))!==stable([evidenceId])||
+      ['Exception','Superseded','Not Required'].includes(choice(get(intake,'intake','Agreement Control Status')))) {
+      issues.push('CLIENT_AGREEMENT_CHANGED_DURING_RECONCILIATION');return finish('exception');
+    }
+    const relation={'Agreement Control Status':{name:'Accepted / Current'},'Evidence Records':addLink(intake,'intake','Evidence Records',evidenceId)};
+    await update('intake',intake.id,relation);intake=await verify('intake',intake.id,relation);recordIds.push(intake.id);
+    await verify('evidence',evidenceId,{'Clients':[{id:client.id}],'Client Intake':[{id:intake.id}]});
+    // Formula readback is recorded, never replaced by a signature-only PASS.
+    intake=await fresh('intake',intake.id);
+    client=await fresh('clients',client.id);
+    if(choice(get(client,'clients','Commercial Agreement Status'))!=='Fully Signed'||
+      stable(links(get(client,'clients','Current Agreement Evidence')))!==stable([evidenceId])||
+      stable(links(get(intake,'intake','Converted Client')))!==stable([client.id])||
+      choice(get(intake,'intake','Agreement Control Status'))!=='Accepted / Current') {
+      issues.push('CLIENT_AGREEMENT_READBACK_CHANGED');return finish('exception');
+    }
+    for(const f of ['Record Environment','CLI-01A Source Identity Gate','CLI-02A Commercial Authority Gate',
+      'CLI-01A Commercial / Service Authorization Gate','Client Readiness State','Client Readiness Blockers',
+      'Service Authorization Decision','Proposal Control Status','Rate Card Control Status',
+      'Agreement Control Status','Insurance / Compliance / Onboarding Control Status']) readback[f]=get(intake,'intake',f);
+    const authorized=readback['Record Environment']==='Production / Live'&&readback['CLI-01A Commercial / Service Authorization Gate']==='PASS — SERVICE REQUEST AUTHORIZED / STOP BEFORE COVERAGE';
+    return finish('done',authorized?'AGREEMENT_RECORDED_GATE_PASS_STOP_BEFORE_COVERAGE':'AGREEMENT_RECORDED_COMMERCIAL_GATE_HELD');
+  }
+  if(e.kind==='representation') {
+    // The tracked public form binds to Object ID. Contacts never repair a broken ID.
+    if(e.lane!=='candidate'||e.formId!=='261558428456063') throw new Error('INVALID_AGREEMENT_CONTEXT');
+    const a=e.agreement;
+    const all=await rows('candidates',['Object ID','Candidate','Email','Phone','Record Environment','Canonical Candidate Record','Population Reconciliation Disposition','Identity Reconciliation Status','Candidate Agreement Status','Evidence Records']);
+    const matches=all.filter(r=>a?.candidateId&&get(r,'candidates','Object ID')===a.candidateId);
+    let candidate=matches.length===1?await fresh('candidates',matches[0].id):null;
+    const invalid=issues.length>0||!candidate||!a?.candidateId||a.candidateId!==a.candidateId.trim()||/[\s<>]/.test(a.candidateId)||
+      !/^https:\/\//.test(a.signature||'')||a.formCode!=='JEF-CANDIDATE-REPRESENTATION-AGREEMENT'||a.formVersion!=='1.0'||
+      (get(candidate,'candidates','Record Environment')==='QA / Test')!==e.qa||
+      links(get(candidate,'candidates','Canonical Candidate Record')).length>0||
+      /ARCHIVED|DUPLICATE|EXCEPTION/.test(choice(get(candidate,'candidates','Population Reconciliation Disposition')))||
+      /Ambiguous|Exception/.test(choice(get(candidate,'candidates','Identity Reconciliation Status')))||
+      choice(get(candidate,'candidates','Candidate Agreement Status'))==='Declined'||
+      (e.person.name&&norm(e.person.name)!==norm(get(candidate,'candidates','Candidate')))||
+      (e.person.email&&nonempty(get(candidate,'candidates','Email'))&&!emails(get(candidate,'candidates','Email')).includes(e.person.email))||
+      (e.person.phone&&nonempty(get(candidate,'candidates','Phone'))&&phone(e.person.phone)!==phone(get(candidate,'candidates','Phone')));
+    if(invalid){issues.push('UNMATCHED_AGREEMENT');return finish('exception','UNMATCHED_AGREEMENT');}
+    const patch={'Evidence Records':addLink(candidate,'candidates','Evidence Records',evidenceId)};
+    if(choice(get(candidate,'candidates','Candidate Agreement Status'))!=='Signed') patch['Candidate Agreement Status']={name:'Signed'};
+    await update('candidates',candidate.id,patch);await verify('candidates',candidate.id,patch);
+    recordIds.push(candidate.id);await verify('evidence',evidenceId,{'Candidates':[{id:candidate.id}]});
+    return finish('done');
+  }
   const previousFor = recordId => {
     const versions=evidenceRows.map(r=>{try {const n=get(r,'evidence','Notes');return str(n).startsWith(machinePrefix)?JSON.parse(n.slice(machinePrefix.length)):null;}catch{return null;}})
       .filter(v=>v&&v.sourceKey===e.sourceKey&&v.recordIds?.includes(recordId)&&v.applied?.[recordId])
@@ -452,6 +551,678 @@ async function reconcile(envelope, base) {
   return finish(issues.length?'exception':'done');
 }
 
+const operationsSchema = {
+  "coverage": {
+    "id": "tblnlI4rYUkpIBDX0",
+    "fields": {
+      "Coverage Request": "fldhOZcD7bz5uouw2",
+      "Client": "fldhN7NobCe4Lf0zn",
+      "Role": "fldV1JHATmVmBlibK",
+      "NEXT State": "fldWijOjjKxLe4YGC",
+      "Shift Date": "fldeGeqe6XZqiZP7r",
+      "Location": "fldVyJuXgkMSRtsQU",
+      "Assigned Worker": "fldHVSGuz2FYKBtGR",
+      "Missing Pieces": "fldvKW7NbQiQvzvCV",
+      "Notes": "fldbbIAvOqrUiaM3H",
+      "Start Time": "fldoeBo6aWKoc2vL9",
+      "End Time": "fldCK0fyjYeY3I3uZ",
+      "On Site Contact": "fldmvGLrtShOPa9yh",
+      "Object ID": "fldA5auW9QxYUl6Ff",
+      "Client Record": "fld8EafjLWGmgtXcj",
+      "Worker Records": "fldbmlkEtOrLS3ioD",
+      "Attendance Outcome": "fldYs8nCSYCouKtpX",
+      "Backup Worker": "fldofPiYY8T8niV7p",
+      "Verified Hours": "fldpymiPGszjAoDNJ",
+      "Hours Evidence Verified": "fld8x0YmfJkqRsLmS",
+      "Payroll Cycle Link": "fldk0pdGLjLoJyzcS",
+      "Invoice Link": "fld9nzUDGZ62khRj5",
+      "Original Assigned Worker": "fldunNTSp3xVcT8ms",
+      "Replacement Worker": "fldGsOzXkOcwJmQ4z",
+      "Incident Type": "fldZyJiUSp2S2oM2m",
+      "Recovery Status": "fld3O18KQprfQvcwt",
+      "Evidence Records": "fld1pvxda7qWyQaIi",
+      "Correction Records": "fldVPPW4AW9rJgLrB",
+      "Source Client Intake": "fldEvfgjSeHChQZHI",
+      "Recruiting Matching Runs": "fld6e6X3LNShO6f6H",
+      "Recruiting Opportunity Matches": "fldo3dPKSmxERvtyp",
+      "Assignment Type": "fldPYUTKVOpvFP0Tt",
+      "Urgency": "fldo3dpCBRiVHOe5G",
+      "Request Received At": "fld7Q0ILJcxHBWn1C",
+      "Coverage Group / Batch ID": "fld472SXIcCrDtBNm",
+      "Worker Slot Number": "fldq0IqzpnSYsLtS7",
+      "Dress Code": "fldldyFoyiPKmvolw",
+      "Check-in Instructions": "fld3OVpsjRiwGJQAe",
+      "Reporting Location": "fld9tRLbeZd0MHy9g",
+      "Parking / Access Details": "fldAmIiKTYtjfhuJ3",
+      "Client Confirmation Status": "fldt6glSoSd16b3FE",
+      "Worker Confirmation Status": "fld5kAFW61fIZTeEG",
+      "Dispatch Sent At": "fld46cxpgs0sfXCwj",
+      "Dispatch Acknowledged At": "fldK6syOOSoYFqMKb",
+      "Approved Worker Rate Snapshot": "flddtM910uigg4G6i",
+      "Approved Client Rate Snapshot": "fldoSlyp2wD2YMZet",
+      "Rate Evidence Status": "fld9VtTTXBWsd80nn",
+      "Tips / Breaks / Compensation Notes": "fldLcTjn8P4WSGuUz",
+      "Finance Control Records": "fldi6bgkFD6kFsqdl",
+      "Dispatch Authorized At": "fldYysTMfxFbYZasR",
+      "Record Environment": "fldwScW8OSMUnoNWo",
+      "Email Intake": "fldx4UmlYEHUbuHdF",
+      "Source Event ID": "fldILK2MuIHBoSxcY",
+      "Coverage Record Type": "fldWccYpWQLAQyqUq",
+      "Required Headcount": "fldU9uTv8a8IFg5Fw",
+      "Parent Demand Coverage": "flddGiYAUM2DePueY",
+      "From field: Parent Demand Coverage": "fldVTTEZcstqYxBrB",
+      "Assignment Sequence": "fldunwA7dFNQI5Q9Y",
+      "Worker Bookings": "flduC3mM4oSruxluw",
+      "Shift Block Sequence": "fldeuqYFvC92yG3jK",
+      "Current Worker Booking": "fldu2oxVb8HHqjAcd",
+      "Worker Reported Hours": "fldnyOlxnS8hubHIm",
+      "Client / Supervisor Confirmed Hours": "fldJNXzxn4msu7mvY",
+      "Break Hours": "fldrj1KrKLUREYShI",
+      "Time Verification Method": "fldXJVRIjGIuknxbx",
+      "Time Verification Status": "fldWG9NQrBXUHV39y",
+      "Scheduled Hours": "flduwEIBoPDMtXCDt",
+      "Fulfillment Requirement Version": "fld2NH5P8tfxJ6hGt",
+      "Job Alert Fallback Status": "fldADUcVUGHEpHGuq",
+      "Job Alert Trigger Reason": "fldC0diUBg4akJE6F",
+      "Job Alert Content Items": "fldNPzbPrLv1E7GYu",
+      "Recruiting Assignment Fit Verified": "flduWKT49yjWjv6qB",
+      "Recruiting Assignment Fit Verified At": "fldkdvHNeIGfxZ9eA"
+    }
+  },
+  "payroll": {
+    "id": "tbl4hdO6xJa0jFC3V",
+    "fields": {
+      "Payroll Cycle": "fldcBaPceZTuVoLpN",
+      "Client": "fldW024ZJGrGAo1tL",
+      "Worker": "fldTZnbSluQfVYwEs",
+      "NEXT State": "fldEMmtC5v3b4pfQ9",
+      "Gate Status": "fld84TNPjAVgF7T1v",
+      "Period Start": "fldp5gmxTnfwlgCjp",
+      "Period End": "fldmmEEL9yb4curE9",
+      "Hours": "fldr076jg4B9iroMC",
+      "Rate": "fldvJlrnW2CCxtVhg",
+      "Gross Pay": "fldktChpiGbGoLjZg",
+      "Client Payment Status": "fldwLUthwG6epJS9O",
+      "Worker Payment Status": "fldemGDLWADNjC6AD",
+      "Missing Pieces": "fld4NHi3VdpkZE1Z7",
+      "Next Task": "fldPV911ZgQcHrBEw",
+      "Notes": "fldw3mIHIxXJcPgJ2",
+      "Object ID": "fldhfy8nHFrMcYFrE",
+      "Workers": "flduX5rm94R1tqcfY",
+      "Client Record": "fld62fkVYEz9JLtVX",
+      "LEGACY — Worker Records — DO NOT USE": "fldy3b1HqJsV3L1YP",
+      "Tasks": "fldyH4PenPaQQbwnD",
+      "Alarms": "fldA1Unk7014PbX4I",
+      "Calculated Gross Pay": "fldq3iro5jfljGOh9",
+      "Gross Pay Variance": "fldfdYfQQtTwFMLbb",
+      "Coverage Requests": "fldttJjxTdewf0xOt",
+      "Hours Evidence Verified": "fld6gdUzXgvRUL7n1",
+      "Payment Authorized": "fldIJYvKhDJTpzG3o",
+      "Payroll Release Gate": "fldzUAM4bIPNfq6AM",
+      "Invoices": "fldDwKibljYaLMRpL",
+      "Finance Control": "fld1xcZRFy2bBR2ZH",
+      "Evidence Records": "fldTj9fxXkf6h3xZN",
+      "Command Ledger Records": "fldnYwbYh0dyEwaoI",
+      "Result Check Records": "fld1uw4aAM0CAsGy0",
+      "Correction Records": "fldGNFnEDFnZARWFA",
+      "Airtable Record ID — Immutable": "fld2ruwBJ3O8El2k2",
+      "Record Environment": "fldScs776oo854Jpi",
+      "Email Intake": "fldywCvJJZ7u2fBAc",
+      "Q3 — Rate Evidence": "flddydXKP6h5WYI6V",
+      "Q6 — Worker Payment Evidence": "fldm8Rh7R1LPJrJN7",
+      "Q7 — Finance Reconciliation": "fldmyICO2tSmG191w",
+      "Guided Review Owner": "fldMWE4hkAmDWokww",
+      "Guided Review Completed At": "fldCoK2hblEELqwF5",
+      "Coverage Record ID Snapshot": "fldYx5HeDHkscOruP",
+      "Coverage Verified Hours Snapshot": "fldEQPgzuxMB0wMuh",
+      "Coverage Time Gate Snapshot": "fldk9Foi2ygHe1KKf",
+      "Coverage Completion Gate Snapshot": "fldlLWaNKaGPGwObJ",
+      "Coverage Time Handoff Gate": "fld6e9OCzYDDWTvTI",
+      "Payment Settlement Status": "fldz868KByN91rKY4",
+      "Payment Event ID": "fldhd12s3EIbrHZIf",
+      "Settled Amount": "flduqqgb10k55m4CX",
+      "Payment Settlement Evidence Verified": "fldcSISSziUY7PkHq",
+      "Remaining Worker Liability": "fldxMEj4iS6IuFWxH",
+      "Worker Deduction / Adjustment": "fldbti7bXOb24Uubj"
+    }
+  },
+  "invoices": {
+    "id": "tblqgnRAMgTL5qldZ",
+    "fields": {
+      "Invoice Number": "fldovgooTMKpk4Jmr",
+      "Client": "fldzjQEL025uln7Ln",
+      "Billing Period": "fldn7A0bdhm5Jfo22",
+      "Period Start": "fldr41Bair7Q2Q0XS",
+      "Period End": "fldXJDnku8pRI0bro",
+      "Service Label": "fldtG4Zg5iymcQ1u1",
+      "Total Amount": "fldh1HILwPCZX5ppv",
+      "Invoice Status": "fldq2QXISe4gOQrNv",
+      "Notes": "fldnefllDvyygNkjK",
+      "Billable Hours": "fld9tWnLef4csHWNZ",
+      "Bill Rate": "fld5yWusxWXhcsOVs",
+      "Calculated Invoice Total": "fldnYNJ4ostpD86cc",
+      "Invoice Total Variance": "fld15vewe8Yn7YLD1",
+      "Coverage Requests": "fldVAOuUV1uR663RC",
+      "Billing Evidence Verified": "fldRle2ViE8Ec20vA",
+      "Send Authorized": "fldvDSA31SmIhbL4N",
+      "Payroll Cycles": "fld4eCWYId7nUXvT0",
+      "Invoice Match Key": "fldMmmhpL54OS9EXx",
+      "Invoice Send Gate": "fldhGoGcYAqheKekV",
+      "Finance Control": "fldYDKwAeF2HtCEFD",
+      "Invoice Registry": "fldtisR4z9QpWSLXx",
+      "Registered Token": "fldCb16CDPo2MA9HZ",
+      "Expected Registry Token": "fldXtu0Y1AkwVY64s",
+      "Registry Validation": "fldw17mnjwfk8Dzem",
+      "Invoice Number Registry": "fldYm1bPM70KFZ0Uk",
+      "Registered Number Token": "fldDKdgoviQfmDoZ7",
+      "Expected Number Token": "fldmsS55KbAB04EFr",
+      "Number Registry Validation": "fldWlYDsAT6SxACgd",
+      "Client Record": "fldl81imw2Mp78uJ4",
+      "Evidence Records": "fldrMv1LX16Lfu108",
+      "Command Ledger Records": "fldv8K0GrH7woEJGs",
+      "Correction Records": "fld9Jv2SjWRVGAlbx",
+      "State Transition Records": "fldEOfBvbPGroIkLw",
+      "Record Environment": "fldIsK6tikWYOWoBa",
+      "Email Intake": "fldSyjROKew9AEGqm",
+      "Invoice Calculation Mode": "fldZ4J8aBn4pMtAib",
+      "Authorized Non-Hours Amount": "fldSZjweKViRd0627",
+      "Authorized Non-Hours Line Description": "fld3zMWFgDU3bLA9i",
+      "Non-Hours Billing Evidence": "flduWwagltThdkubH",
+      "Invoice Calculation Path Gate": "fldDmvF9J4Rn0KyBt",
+      "Invoice Template Version Snapshot": "fldYfUEO2Gnyz96yo",
+      "Invoice Template Drive File ID": "fld3lW86aMN0HbL1v",
+      "Invoice Draft Drive File ID": "fldfW2dnauIGgQNme",
+      "Invoice Draft Render Gate": "fldcgG7wmGRlnE4iN",
+      "Invoice Recipient Route Snapshot": "fldgnxjmHbj3CH9PL",
+      "Invoice Recipient Validation": "fldxxpp0PsJtyNTfl",
+      "Invoice Send Effect ID": "fldFFcxJLTyDaWcjd",
+      "Invoice Delivery Status": "fldv51JK3dVxhgsR3",
+      "Invoice Delivery Evidence Verified": "fldaTwuvvZHA2C7RY",
+      "Invoice Receivable Settlement Status": "fldj0Wk6OEmbFFqNk",
+      "Invoice Receivable Settled Amount": "fldA3YicD0tkOBOie",
+      "Invoice Receivable Evidence Verified": "fldqrtHa31vyiylyT",
+      "Remaining Client Receivable": "fldVcBACwlXVcm4iq",
+      "Invoice Delivery Gate": "fldNNGkrqnuZMbBLe",
+      "Invoice Receivable Gate": "flddMoES9nrs7Rars",
+      "Historical Number Collision Verified": "fldtcRWgaMQSS5FBc",
+      "Invoice Identity Integrity Gate": "fldCwLUolBZjams3R",
+      "Client Invoice Continuity Review Status": "fldHaqnqFycph5iw1",
+      "Prior Client Invoice Reference Snapshot": "fldaHNXSdj7lRbRzU",
+      "Client Invoice Continuity Review Notes": "fldHkh7INaEBTocBq",
+      "Invoice Continuity Review Gate": "fld1yra0cg9wCUFaF",
+      "Mixed-Rate Staffing Calculation": "fldJSC9H9rY9GLM7o",
+      "Mixed-Rate Staffing Amount": "fldH3jhMffmQdPidG",
+      "Mixed-Rate Calculation Basis": "fld3rUKYBlj1lXBTd",
+      "Mixed-Rate Correction Evidence": "fld13Xz9iexsVIYLL"
+    }
+  },
+  "finance": {
+    "id": "tblsy5wOMyg81ZWPE",
+    "fields": {
+      "Finance Item": "fldX9etpuYNpcYGXR",
+      "Finance Area": "fldisohdVjoVVGBDM",
+      "Related Client": "fldLFBYFEndMpZRBM",
+      "Related Invoice": "fldgPAPfKleYbgwLY",
+      "Related Payroll": "fldJfKkch7ASUp2es",
+      "Amount": "fldJPYSfQ76F3b6vr",
+      "Approval Status": "fldWx3RBBjcnUHaV6",
+      "Notes": "flduit2U7iTrAeNlC",
+      "Invoice Record": "fld78OCkPQWLmOpgc",
+      "Payroll Cycle Records": "fldawrzyOAh52KGmG",
+      "Invoice Amount": "fldm3F4sEmvJIbLA8",
+      "Payroll Amount": "fldYP16TiIBQRck2n",
+      "Calculated Spread": "fldzvcUPQTnf3tfhn",
+      "Spread Variance": "fldaf2QMhRDI0YCC2",
+      "Reconciliation Close Gate": "fldOGNNOptnTnNASy",
+      "Client Record": "fldxNiz6SuYGrrcDs",
+      "Evidence Records": "fldIiw0evfKotSLEC",
+      "Command Ledger Records": "fldNdDYkdFVPYcIIb",
+      "Result Check Records": "fldNFtJfJP0GThv6h",
+      "Correction Records": "fldxxBRr1onKB5bvo",
+      "State Transition Records": "fldpMRoRVyVgNRM9d",
+      "Archive Records": "fldf6aVQ1wDoygdNN",
+      "Coverage Requests": "fldOMrzaLb7MHbUE1",
+      "Record Environment": "fldMFM8JWUHFYabTt",
+      "Closeout Coverage Record ID Snapshot": "fldZ1eqXkuBWEEs77",
+      "Closeout Case Key": "fldNLzpcWNAcckgKx",
+      "Operational Completion Verified": "fldHaszY86jMod7l4",
+      "Worker Liability Status": "fldY9qNn9yYHrpyuN",
+      "Client Receivable Status": "fld0aZcJTBOSCZp6E",
+      "Worker Payment Evidence Verified": "flde6Nb5caiFWNEle",
+      "Client Payment Evidence Verified": "fldg0QsmDNT8ttHTc",
+      "Reconciliation Exception Class": "fldx28GGKeVjFOIS7",
+      "Closeout Disposition": "fldZ9DrMGg4l5fNB5",
+      "End-to-End Closeout Gate": "fldvzys5X8qr2xKkE",
+      "Payroll Finance Handoff Snapshot": "fld1v7W3sRgSl8MEC",
+      "Payroll Remaining Liability Snapshot": "fldFREAqHQZOPCrLA",
+      "Invoice Receivable Gate Snapshot": "fldtZvWEAhqN3ktZu",
+      "Invoice Remaining Receivable Snapshot": "fld21SNH0mgwOWDdS",
+      "Settlement Source Verification Gate": "fldwKUE3nY2uLrUkt",
+      "Payroll Settlement Outcome Snapshot": "fldQrA7o8xnWYcV38",
+      "Invoice Receivable Outcome Snapshot": "fldRRCv126Oqd5a72",
+      "S11 Finance Operator State": "fldDPX7aBj9F3onQq",
+      "S11 Finance Operator Action": "fldOwlmYTXdOMIRBd"
+    }
+  },
+  "workers": {
+    "id": "tbloSqRveT39fOF3K",
+    "fields": {
+      "Worker": "fldaPcpaeZBb86RFE",
+      "Phone": "fldBVwB7uiBVPpUFd",
+      "Email": "fldDtBFEyiOUo7rGq",
+      "Worker Lifecycle State": "fldMpC3jSVbO6gQdt",
+      "Current Client — Display Only": "fld2xGRLKrT9Adj1l",
+      "Primary Role": "fldl11AXqP6UBMlnm",
+      "Default Pay Rate — Reference Only": "fldpjgbEkPE8OiGKL",
+      "Hours Capture Method Status": "flddldLYlKLgPKlz6",
+      "Readiness Notes (Optional)": "fldqUg32FQuYhKS30",
+      "Notes": "fldaawaEgHQTYAOHS",
+      "Object ID": "fldZhDhI33RMt1MRF",
+      "Client Record": "fldsy4MNwSNyoACe4",
+      "LEGACY — Payroll Cycle Records — DO NOT USE": "fldPbBPJJJ6d2acVN",
+      "Assigned Coverage Requests": "fldUcwKpYaAFhUGuQ",
+      "Payroll Cycles": "fld69s43CqqwzoXF2",
+      "Source Candidate Record": "fld2MbtGJrwosuAHH",
+      "Backup Coverage Requests": "flduKKIYNysFjyZdS",
+      "Original Assignment History": "fld7BYTsmkE6b7IT3",
+      "Replacement Coverage Requests": "fldrGhEu9GSWFZs1M",
+      "Worker Activation Date": "fldvL8GeC8jYFLST9",
+      "Identity Verification Status": "fldVv0iLT6uZ1Ywla",
+      "Work Authorization Verification Status": "fldm8a74AJ24as1fz",
+      "Work Authorization Expiration Date": "fldaGnpUE4F7V53VR",
+      "Onboarding Documentation Status": "fldedoI61bAYU2Uow",
+      "Payment Method Status": "fld0Ckyo9jCxxd4a9",
+      "Availability Status": "fldxnD2rCGgQgVMGF",
+      "Availability Last Confirmed": "fldtJScMFzO7y1XSR",
+      "Availability Summary": "fldZxVGvROzxPleQG",
+      "Communication Status": "fld1iRR9FQBBVT88n",
+      "Preferred Contact Channel": "fld9mQZJWqkraEcEZ",
+      "Evidence Records": "fldKFxAhuVJYzEvDh",
+      "Inactivation Date": "fldeN61TVgJG8foQ2",
+      "Inactivation Reason": "fld5jcSwjnd4gDxcP",
+      "Rehire Eligibility": "fldCndH2Im3DyPrjJ",
+      "Screening Evidence Records": "fldgKV0ocYoZdn5qC",
+      "Airtable Record ID — Immutable": "fldyy5fGU8l1TGMIE",
+      "Source Candidate Activation Verified At": "fldzZV9JamoG2qrYX",
+      "Record Environment": "fldSifBESW7FnD7j7",
+      "Email Intake": "fldC7xSetYXzlGuKd",
+      "Worker Bookings": "fldD8BSqe3TP05FST",
+      "Team Member Number": "fldrbxSujwG2ieiad",
+      "Birthday": "fldiODEUos4H5APbp"
+    }
+  },
+  "bookings": {
+    "id": "tblMW0700unQNa8A9",
+    "fields": {
+      "Booking ID": "fldExy9ifHvSSZu25",
+      "Coverage Slot": "fldvUfAFH6CK4QvAL",
+      "Worker": "fldRGABzpyw0Xcp13",
+      "Matching Source": "fld8H2S0D9pO4uFSn",
+      "Booking Sequence": "fldm0vawUX2aRogx3",
+      "Booking Type": "fldb0ypKwsiipgiJ0",
+      "Booking Status": "fldv4qVIrcfoSnkKJ",
+      "Role Snapshot": "fld5uOaaFoAW3tnwO",
+      "Scheduled Start Snapshot": "fld8fNP7ZSW6SjUXd",
+      "Scheduled End Snapshot": "fldYpTYBd0QuHQyL3",
+      "Worker Rate Snapshot": "fldhHvVIh7XlrJud7",
+      "Client Rate Snapshot": "fldxnH2kzZkXrEFmv",
+      "Offered At": "fldah9meLeo9piMcs",
+      "Confirmed At": "fldHZEkXXssxDiJg7",
+      "Released / Replaced At": "fld4urY4SHhPBaYBt",
+      "Release / Replacement Reason": "fld0KUEcxVTihView",
+      "Evidence Records": "fldJVsDYP6iUdaNSy",
+      "Notes": "fldWqARv6RLhczV9D",
+      "Replaces Booking": "fldDeeQZHHx1aRmYi",
+      "From field: Replaces Booking": "fldJYkkZRSKR9R4dO",
+      "Record Environment": "fldXAcVnAecrP8K1o",
+      "Coverage Requests": "fldb9abV2clYm3P8i",
+      "Candidate": "fldi0uwHYrtcDmHR0",
+      "Homebase Assignment Evidence": "fldPvN4CwWkL53t9S"
+    }
+  }
+};
+
+
+const intakeSchema=schema;
+const {coverageFinanceHandoff}=(()=>{
+// Native handoff predicates, using the current canonical field names.
+// Read-only: these never authorize dispatch, payment, invoice send or new rates.
+const choice = v => v?.name || v || '';
+const ids = v => Array.isArray(v) ? v.map(x=>typeof x==='string'?x:x.id) : [];
+const exact = v => /^rec[A-Za-z0-9]{14}$/.test(v || '');
+function authorizedCoverageRequest(request) {
+  return exact(request?.id) && request['Record Environment']==='Production / Live' &&
+    request['CLI-01A Commercial / Service Authorization Gate']==='PASS — SERVICE REQUEST AUTHORIZED / STOP BEFORE COVERAGE' &&
+    ids(request['Converted Client']).length===1 && exact(ids(request['Converted Client'])[0]);
+}
+function coverageFinanceHandoff(coverage) {
+  const blocked = reason => ({ disposition:'HOLD',reason });
+  if(!exact(coverage?.id)||choice(coverage['Coverage Record Type'])!=='Staffing Slot Source')return blocked('EXACT_STAFFING_SLOT_REQUIRED');
+  const workers=ids(coverage['Worker Records']),clients=ids(coverage['Client Record']),evidence=ids(coverage['Evidence Records']);
+  if(workers.length!==1||clients.length!==1||![...workers,...clients,...evidence].every(exact))return blocked('EXACT_WORKER_CLIENT_EVIDENCE_REQUIRED');
+  if(choice(coverage['Attendance Outcome'])!=='Completed'||choice(coverage['Time Verification Status'])!=='Verified'||
+    coverage['Hours Evidence Verified']!==true||!evidence.length||typeof coverage['Verified Hours']!=='number'||
+    !Number.isFinite(coverage['Verified Hours'])||coverage['Verified Hours']<=0)return blocked('VERIFIED_TIME_REQUIRED');
+  // Claims may differ after an evidenced reconciliation; they must not overwrite
+  // Verified Hours. Disputed status already fails above. Scheduling is not read.
+  if(choice(coverage['Rate Evidence Status'])!=='Verified'||
+    !['Approved Worker Rate Snapshot','Approved Client Rate Snapshot'].every(f=>typeof coverage[f]==='number'&&Number.isFinite(coverage[f])&&coverage[f]>0))return blocked('VERIFIED_ASSIGNMENT_RATES_REQUIRED');
+  return { disposition:'READY_FOR_DRAFT', coverageId:coverage.id,workerId:workers[0],clientId:clients[0],evidenceIds:evidence,
+    snapshots:{'Coverage Record ID Snapshot':coverage.id,'Coverage Verified Hours Snapshot':coverage['Verified Hours'],
+      'Coverage Time Gate Snapshot':'PASS — HOURS VERIFIED','Coverage Completion Gate Snapshot':'READY FOR PAYROLL AND BILLING'} };
+}
+
+return {coverageFinanceHandoff};})();
+const {fillMissingStaffingSlots}=(()=>{
+const ids=v=>(v||[]).map(x=>typeof x==='string'?x:x.id);
+const choice=v=>v?.name||v||'';
+const exact=v=>/^rec[A-Za-z0-9]{14}$/.test(v||'');
+
+// Uses a sourced canonical Demand Header. Free-text intake answers cannot
+// manufacture a date, role, headcount, location or assignment rate.
+async function fillMissingStaffingSlots(requestId,base,{exclusiveClaim,qa=false}={}) {
+  const hold=reason=>({disposition:'HOLD',reason});
+  if(base.id!=='appveHEw1HrXr8nD1'||!exact(requestId)||typeof exclusiveClaim!=='function'||!await exclusiveClaim(`${requestId}|staffing-slots`))return hold('EXCLUSIVE_NATIVE_CLAIM_REQUIRED');
+  const tables={...schema,...operationsSchema};
+  const table=t=>base.getTable(tables[t].id);
+  const field=(t,f)=>{const id=tables[t].fields[f];if(!id)throw new Error('UNMAPPED_FIELD');return id;};
+  const get=(r,t,f)=>r?.getCellValue(field(t,f));
+  const read=async(t,id)=>table(t).selectRecordAsync(id);
+  const all=async(t,fields)=>(await table(t).selectRecordsAsync({fields:fields.map(f=>field(t,f))})).records;
+  const valid=r=>r&&get(r,'intake','Record Environment')===(qa?'QA / Test':'Production / Live')&&get(r,'intake','CLI-01A Commercial / Service Authorization Gate')==='PASS — SERVICE REQUEST AUTHORIZED / STOP BEFORE COVERAGE'&&ids(get(r,'intake','Converted Client')).length===1;
+  let request=await read('intake',requestId);if(!valid(request))return hold('FULL_COMMERCIAL_GATE_REQUIRED');
+  const allCoverage=await all('coverage',['Coverage Record Type','Source Client Intake','Source Event ID','Parent Demand Coverage','Worker Slot Number','Assignment Sequence','Shift Block Sequence']);
+  const headers=allCoverage.filter(r=>choice(get(r,'coverage','Coverage Record Type'))==='Demand Header'&&ids(get(r,'coverage','Source Client Intake')).includes(requestId));
+  if(headers.length!==1)return hold(headers.length?'DUPLICATE_DEMAND_HEADER':'SOURCED_DEMAND_HEADER_REQUIRED');
+  const header=await read('coverage',headers[0].id),clientId=ids(get(request,'intake','Converted Client'))[0],environment=qa?'QA / Test':'Production / Live';
+  const count=get(header,'coverage','Required Headcount'),event=get(header,'coverage','Source Event ID'),role=get(header,'coverage','Role'),day=get(header,'coverage','Shift Date'),start=get(header,'coverage','Start Time'),end=get(header,'coverage','End Time'),location=get(header,'coverage','Location');
+  const assignment=get(header,'coverage','Assignment Sequence')||1,block=get(header,'coverage','Shift Block Sequence')||1;
+  if(get(header,'coverage','Record Environment')!==environment||JSON.stringify(ids(get(header,'coverage','Client Record')))!==JSON.stringify([clientId])||
+    !Number.isInteger(count)||count<1||count>500||!event||!role||!location||!/^\d{4}-\d{2}-\d{2}$/.test(day||'')||!Number.isFinite(Date.parse(start))||!Number.isFinite(Date.parse(end))||Date.parse(end)<=Date.parse(start)||!Number.isInteger(assignment)||assignment<1||!Number.isInteger(block)||block<1)return hold('INCOMPLETE_OR_CONFLICTING_DEMAND_FACTS');
+  const evidenceIds=ids(get(header,'coverage','Evidence Records'));
+  if(!evidenceIds.length)return hold('REVIEWED_DEMAND_EVIDENCE_REQUIRED');
+  const demandFields=['Coverage Record Type','Record Environment','Required Headcount','Source Event ID','Role','Shift Date','Start Time','End Time','Location','Assignment Sequence','Shift Block Sequence','Client Record','Source Client Intake','Evidence Records'];
+  const linkFields=new Set(['Client Record','Source Client Intake','Evidence Records']);
+  // Capture values now, not the record handle: native reads are fresh snapshots.
+  const demandVersion=r=>JSON.stringify(demandFields.map(f=>linkFields.has(f)?ids(get(r,'coverage',f)).sort():f==='Coverage Record Type'?choice(get(r,'coverage',f)):get(r,'coverage',f)));
+  const admittedDemand=demandVersion(header);
+  const reviewedEvidence=async()=>{for(const id of evidenceIds){const e=await read('evidence',id);if(!e||get(e,'evidence','Verified')!==true||get(e,'evidence','Source Provenance Verified')!==true||choice(get(e,'evidence','Provenance Disposition'))!=='Accepted Source'||!ids(get(e,'evidence','Coverage Requests')).includes(header.id)||!ids(get(e,'evidence','Client Intake')).includes(requestId))return false;}return true;};
+  if(!await reviewedEvidence())return hold('REVIEWED_DEMAND_EVIDENCE_REQUIRED');
+  const children=allCoverage.filter(r=>choice(get(r,'coverage','Coverage Record Type'))==='Staffing Slot Source'&&(ids(get(r,'coverage','Parent Demand Coverage')).includes(header.id)||get(r,'coverage','Source Event ID')===event));
+  const groups=new Map();
+  for(const r of children){const seq=get(r,'coverage','Assignment Sequence')||1,shift=get(r,'coverage','Shift Block Sequence')||1,num=get(r,'coverage','Worker Slot Number');if(seq!==assignment||shift!==block)continue;const list=groups.get(num)||[];list.push(r);groups.set(num,list);}
+  const expected={'Client Record':[{id:clientId}],'Source Client Intake':[{id:requestId}],'Source Event ID':event,'Role':role,'Shift Date':day,'Start Time':start,'End Time':end,'Location':location,'Parent Demand Coverage':[{id:header.id}],'Assignment Sequence':assignment,'Shift Block Sequence':block};
+  for(const [num,list]of groups){if(!Number.isInteger(num)||num<1||list.length!==1)return hold('AMBIGUOUS_STAFFING_SLOT_IDENTITY');const r=await read('coverage',list[0].id);for(const[f,v]of Object.entries(expected)){const observed=get(r,'coverage',f);if(Array.isArray(v)?JSON.stringify(ids(observed))!==JSON.stringify(ids(v)):observed!==v)return hold('EXISTING_SLOT_CONTRADICTION');}if(get(r,'coverage','Record Environment')!==environment)return hold('ENVIRONMENT_MISMATCH');}
+  const created=[],reused=[];
+  for(let number=1;number<=count;number++){
+    if(!await exclusiveClaim(`${requestId}|staffing-slots`))return {...hold('EXCLUSIVE_CLAIM_LOST'),created,reused};
+    request=await read('intake',requestId);if(!valid(request)||ids(get(request,'intake','Converted Client'))[0]!==clientId)return {...hold('COMMERCIAL_AUTHORITY_CHANGED'),created,reused};
+    const live=await read('coverage',header.id);
+    if(!live||demandVersion(live)!==admittedDemand)return {...hold('DEMAND_CHANGED_BEFORE_WRITE'),created,reused};
+    if(!await reviewedEvidence())return {...hold('SOURCE_EVIDENCE_CHANGED_BEFORE_WRITE'),created,reused};
+    if(groups.has(number)){reused.push(groups.get(number)[0].id);continue;}
+    const values={...expected,'Coverage Request':`${qa?'TEST-':''}${role} | ${day} | Slot ${number}`,'Coverage Record Type':{name:'Staffing Slot Source'},'Object ID':`${qa?'TEST-':''}SLOT|${header.id}|${assignment}|${block}|${number}`,'Coverage Group / Batch ID':event,'Worker Slot Number':number,'Attendance Outcome':{name:'Pending'},'Evidence Records':evidenceIds.map(id=>({id}))};
+    const id=await table('coverage').createRecordAsync(Object.fromEntries(Object.entries(values).map(([f,v])=>[field('coverage',f),v]))),r=await read('coverage',id);
+    for(const[f,v]of Object.entries(values)){const observed=get(r,'coverage',f);const ok=Array.isArray(v)?JSON.stringify(ids(observed).sort())===JSON.stringify(ids(v).sort()):v?.name?choice(observed)===v.name:observed===v;if(!ok)throw new Error('SLOT_READBACK_FAILED');}
+    created.push(id);
+  }
+  return {disposition:'SLOTS_RECONCILED',headerId:header.id,created,reused,protectedEffects:false};
+}
+
+return {fillMissingStaffingSlots};})();
+const {prepareFinanceDrafts}=(()=>{
+
+const schema={...intakeSchema,...operationsSchema};
+const ids=v=>(v||[]).map(x=>typeof x==='string'?x:x.id);
+const choice=v=>v?.name||v||'';
+const exact=v=>/^rec[A-Za-z0-9]{14}$/.test(v||'');
+const cents=v=>Math.round((v+Number.EPSILON)*100)/100;
+
+// Native execution boundary: caller must already hold the existing governed
+// exclusive write claim. This module adds neither a scheduler nor a queue.
+async function prepareFinanceDrafts(coverageId,base,{exclusiveClaim,qa=false,now=()=>new Date().toISOString()}={}) {
+  const hold=reason=>({disposition:'HOLD',reason});
+  if(base.id!=='appveHEw1HrXr8nD1'||!exact(coverageId)||typeof exclusiveClaim!=='function'||!await exclusiveClaim(`${coverageId}|finance-drafts`)) return hold('EXCLUSIVE_NATIVE_CLAIM_REQUIRED');
+  const table=t=>base.getTable(schema[t].id);
+  const field=(t,f)=>{const id=schema[t].fields[f];if(!id)throw new Error('UNMAPPED_FIELD');return id;};
+  const get=(r,t,f)=>r?.getCellValue(field(t,f));
+  const read=async(t,id)=>table(t).selectRecordAsync(id);
+  const all=async(t,fields)=>(await table(t).selectRecordsAsync({fields:fields.map(f=>field(t,f))})).records;
+  const encode=(t,fields)=>Object.fromEntries(Object.entries(fields).map(([f,v])=>[field(t,f),v]));
+  const coverageSourceFields=['Coverage Record Type','Record Environment','Worker Records','Client Record','Evidence Records','Attendance Outcome','Time Verification Status','Hours Evidence Verified','Verified Hours','Rate Evidence Status','Approved Worker Rate Snapshot','Approved Client Rate Snapshot','Shift Date','Role','End Time','Payroll Cycle Link','Invoice Link','Finance Control Records'];
+  const asObject=(r,t)=>({id:r.id,...Object.fromEntries(coverageSourceFields.map(f=>[f,get(r,t,f)]))});
+  const verify=async(t,id,values)=>{const r=await read(t,id);if(!r)throw new Error('READBACK_MISSING');for(const[f,v]of Object.entries(values)){const current=get(r,t,f);const ok=Array.isArray(v)?JSON.stringify(ids(current).sort())===JSON.stringify(ids(v).sort()):v?.name?choice(current)===v.name:JSON.stringify(current??null)===JSON.stringify(v??null);if(!ok)throw new Error('DRAFT_READBACK_FAILED:'+f);}return r;};
+  const evidenceVersions=new Map();
+  const evidenceSourceFields=['Evidence ID','Evidence Type','Related Module','Related Object ID','Evidence Date','File Link','Attachment','Notes','Verified','Source Provenance Verified','Provenance Disposition','Coverage Requests','Workers','Candidates','Record Environment'];
+  const evidenceVersion=r=>JSON.stringify(evidenceSourceFields.map(f=>get(r,'evidence',f)));
+  const immutableSource=record=>Object.fromEntries(Object.entries(asObject(record,'coverage')).filter(([f])=>!['Payroll Cycle Link','Invoice Link','Finance Control Records'].includes(f)));
+  const upsert=async(t,r,values)=>{if(!await exclusiveClaim(`${coverageId}|finance-drafts`))throw new Error('EXCLUSIVE_CLAIM_LOST');const latest=await read('coverage',coverageId);if(!latest||JSON.stringify(immutableSource(latest))!==JSON.stringify(immutableSource(source)))throw new Error('COVERAGE_CHANGED_DURING_WRITE');for(const id of plan.evidenceIds){const e=await read('evidence',id);if(!e||get(e,'evidence','Verified')!==true||get(e,'evidence','Source Provenance Verified')!==true||choice(get(e,'evidence','Provenance Disposition'))!=='Accepted Source'||!ids(get(e,'evidence','Coverage Requests')).includes(coverageId)||evidenceVersion(e)!==evidenceVersions.get(id))throw new Error('SOURCE_EVIDENCE_CHANGED_DURING_WRITE');}if(r)await table(t).updateRecordAsync(r.id,encode(t,values));const id=r?.id||await table(t).createRecordAsync(encode(t,values));await verify(t,id,values);return id;};
+  const source=await read('coverage',coverageId);if(!source)return hold('COVERAGE_NOT_FOUND');
+  const c=asObject(source,'coverage'),plan=coverageFinanceHandoff(c);
+  if(plan.disposition!=='READY_FOR_DRAFT')return plan;
+  const environment=qa?'QA / Test':'Production / Live';
+  if(c['Record Environment']!==environment)return hold('ENVIRONMENT_MISMATCH');
+  const client=await read('clients',plan.clientId),worker=await read('workers',plan.workerId);
+  if(!client||!worker||get(client,'clients','Record Environment')!==environment||get(worker,'workers','Record Environment')!==environment)return hold('EXACT_CANONICAL_PERSON_CLIENT_REQUIRED');
+  const day=c['Shift Date'];
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(day||'')||!c.Role)return hold('EXACT_PERIOD_ROLE_REQUIRED');
+  if(!/(Z|[+-]\d{2}:\d{2})$/.test(c['End Time']||'')||!Number.isFinite(Date.parse(c['End Time']))||!Number.isFinite(Date.parse(now()))||Date.parse(c['End Time'])>Date.parse(now()))return hold('SHIFT_NOT_EVIDENCED_AS_ENDED');
+  for(const id of plan.evidenceIds){const e=await read('evidence',id);if(!e||get(e,'evidence','Verified')!==true||get(e,'evidence','Source Provenance Verified')!==true||choice(get(e,'evidence','Provenance Disposition'))!=='Accepted Source'||!ids(get(e,'evidence','Coverage Requests')).includes(coverageId))return hold('EXACT_REVIEWED_SOURCE_EVIDENCE_REQUIRED');evidenceVersions.set(id,evidenceVersion(e));}
+  const payroll=await all('payroll',['Object ID','Workers','Client Record','Period Start','Period End','Hours','Rate','Gross Pay','Coverage Requests','Coverage Record ID Snapshot','Worker Payment Status']);
+  const invoices=await all('invoices',['Client Record','Period Start','Period End','Coverage Requests','Invoice Status','Billable Hours','Bill Rate','Total Amount']);
+  const finance=await all('finance',['Coverage Requests','Closeout Coverage Record ID Snapshot','Payroll Cycle Records','Invoice Record','Closeout Disposition']);
+  const overlapping=r=>get(r,'payroll','Period Start')<=day&&get(r,'payroll','Period End')>=day;
+  const pm=payroll.filter(r=>ids(get(r,'payroll','Coverage Requests')).includes(coverageId)||get(r,'payroll','Coverage Record ID Snapshot')===coverageId||get(r,'payroll','Object ID')===`${qa?'TEST-':''}P3-PAYROLL|${coverageId}`);
+  const im=invoices.filter(r=>ids(get(r,'invoices','Coverage Requests')).includes(coverageId));
+  const fm=finance.filter(r=>ids(get(r,'finance','Coverage Requests')).includes(coverageId)||get(r,'finance','Closeout Coverage Record ID Snapshot')===coverageId);
+  if(pm.length>1||im.length>1||fm.length>1)return hold('DUPLICATE_FINANCE_IDENTITY');
+  // An unlinked period aggregate might already represent this liability or
+  // receivable. Preserve it for reconciliation; never create a per-slot copy.
+  if(payroll.some(r=>!pm.includes(r)&&ids(get(r,'payroll','Workers')).includes(plan.workerId)&&ids(get(r,'payroll','Client Record')).includes(plan.clientId)&&overlapping(r))||
+    invoices.some(r=>!im.includes(r)&&ids(get(r,'invoices','Client Record')).includes(plan.clientId)&&get(r,'invoices','Period Start')<=day&&get(r,'invoices','Period End')>=day))return hold('EXISTING_PERIOD_AGGREGATE_REQUIRES_RECONCILIATION');
+  const p=pm[0],i=im[0],f=fm[0],hours=c['Verified Hours'],pay=cents(hours*c['Approved Worker Rate Snapshot']),bill=cents(hours*c['Approved Client Rate Snapshot']);
+  if(f&&((ids(get(f,'finance','Payroll Cycle Records')).length&&JSON.stringify(ids(get(f,'finance','Payroll Cycle Records')))!==JSON.stringify(p?[p.id]:[]))||(ids(get(f,'finance','Invoice Record')).length&&JSON.stringify(ids(get(f,'finance','Invoice Record')))!==JSON.stringify(i?[i.id]:[]))))return hold('EXISTING_FINANCE_RELATIONSHIP_CONFLICT');
+  const conflict=(r,t,values)=>r&&Object.entries(values).some(([k,v])=>{const current=get(r,t,k);return current!==null&&current!==undefined&&current!==''&&(Array.isArray(v)?ids(current).length>0&&JSON.stringify(ids(current).sort())!==JSON.stringify(ids(v).sort()):JSON.stringify(current)!==JSON.stringify(v));});
+  const pValues={'Workers':[{id:plan.workerId}],'Client Record':[{id:plan.clientId}],'Coverage Requests':[{id:coverageId}],'Period Start':day,'Period End':day,Hours:hours,Rate:c['Approved Worker Rate Snapshot'],'Gross Pay':pay,...plan.snapshots};
+  const iValues={'Client Record':[{id:plan.clientId}],'Coverage Requests':[{id:coverageId}],'Period Start':day,'Period End':day,'Billable Hours':hours,'Bill Rate':c['Approved Client Rate Snapshot'],'Total Amount':bill};
+  if(conflict(p,'payroll',pValues)||conflict(i,'invoices',iValues)||p&&['Paid','Disputed','Excluded'].includes(choice(get(p,'payroll','Worker Payment Status')))||i&&!['Draft','Review'].includes(choice(get(i,'invoices','Invoice Status')))||f&&['Closed','Ready to Close','Approved Exception'].includes(choice(get(f,'finance','Closeout Disposition'))))return hold('PROTECTED_OR_CONFLICTING_MONEY_OBJECT');
+  const alreadyLinkedPayroll=ids(c['Payroll Cycle Link']),alreadyLinkedInvoice=ids(c['Invoice Link']),alreadyLinkedFinance=ids(c['Finance Control Records']);
+  if((alreadyLinkedPayroll.length&&JSON.stringify(alreadyLinkedPayroll)!==JSON.stringify(p?[p.id]:[]))||(alreadyLinkedInvoice.length&&JSON.stringify(alreadyLinkedInvoice)!==JSON.stringify(i?[i.id]:[]))||(alreadyLinkedFinance.length&&JSON.stringify(alreadyLinkedFinance)!==JSON.stringify(f?[f.id]:[])))return hold('EXISTING_RELATIONSHIP_CONFLICT');
+  // Immediate authoritative reread before any write. Source changes invalidate
+  // the planned handoff; they cannot silently alter an existing money object.
+  const latest=await read('coverage',coverageId);
+  if(JSON.stringify(asObject(latest,'coverage'))!==JSON.stringify(c))return hold('COVERAGE_CHANGED_BEFORE_WRITE');
+  const evidence=plan.evidenceIds.map(id=>({id}));
+  const union=(r,t,field,extra)=>[...new Set([...ids(get(r,t,field)),...extra])].map(id=>({id}));
+  const payrollId=await upsert('payroll',p,{...pValues,'Hours Evidence Verified':true,'Evidence Records':union(p,'payroll','Evidence Records',plan.evidenceIds),...(!p?{'Payroll Cycle':`${qa?'TEST-':''}P3 Payroll ${coverageId}`,'Object ID':`${qa?'TEST-':''}P3-PAYROLL|${coverageId}`,'Worker Payment Status':{name:'Unpaid'}}:{})});
+  const invoiceId=await upsert('invoices',i,{...iValues,'Billing Evidence Verified':true,'Payroll Cycles':union(i,'invoices','Payroll Cycles',[payrollId]),'Evidence Records':union(i,'invoices','Evidence Records',plan.evidenceIds),...(!i?{'Invoice Number':qa?`TEST-DRAFT-${coverageId}`:'','Service Label':c.Role,'Invoice Status':{name:'Draft'}}:{})});
+  const financeId=await upsert('finance',f,{'Coverage Requests':[{id:coverageId}],'Closeout Coverage Record ID Snapshot':coverageId,'Client Record':[{id:plan.clientId}],'Payroll Cycle Records':[{id:payrollId}],'Invoice Record':[{id:invoiceId}],'Evidence Records':union(f,'finance','Evidence Records',plan.evidenceIds),...(!f?{'Finance Item':`${qa?'TEST-':''}P3 Review ${coverageId}`,'Finance Area':{name:'Reconciliation Review'},'Approval Status':{name:'Needs Approval'},'Closeout Disposition':{name:'Open'}}:{})});
+  await upsert('payroll',await read('payroll',payrollId),{'Invoices':union(await read('payroll',payrollId),'payroll','Invoices',[invoiceId]),'Finance Control':union(await read('payroll',payrollId),'payroll','Finance Control',[financeId])});
+  await upsert('invoices',await read('invoices',invoiceId),{'Finance Control':union(await read('invoices',invoiceId),'invoices','Finance Control',[financeId])});
+  await upsert('coverage',latest,{'Payroll Cycle Link':[{id:payrollId}],'Invoice Link':[{id:invoiceId}],'Finance Control Records':[{id:financeId}]});
+  return {disposition:'DRAFTS_PREPARED',coverageId,payrollId,invoiceId,financeId,protectedEffects:false};
+}
+
+return {prepareFinanceDrafts};})();
+const {runIntakeHandoffs}=(()=>{
+
+// Runs inside the existing Client native receipt claim, before completion.
+// It consumes existing reviewed demand/time; it never manufactures either.
+async function runIntakeHandoffs(envelope,result,base,assertClaim) {
+  const hold=reason=>({disposition:'HOLD',reason});
+  if(envelope?.lane!=='client'||result?.status!=='done')return hold('CLIENT_RECONCILIATION_REQUIRED');
+  if(typeof assertClaim!=='function'||!await assertClaim())return hold('EXCLUSIVE_NATIVE_CLAIM_REQUIRED');
+  const evidence=await base.getTable(schema.evidence.id).selectRecordAsync(result.recordIds[0]);
+  const ids=v=>(v||[]).map(x=>typeof x==='string'?x:x.id);
+  const requestIds=ids(evidence?.getCellValue(schema.evidence.fields['Client Intake']));
+  if(requestIds.length!==1)return hold('EXACT_RECONCILED_REQUEST_REQUIRED');
+  const requestId=requestIds[0],request=await base.getTable(schema.intake.id).selectRecordAsync(requestId);
+  if(request?.getCellValue(schema.intake.fields['Record Environment'])!==(envelope.qa?'QA / Test':'Production / Live'))return hold('ENVIRONMENT_MISMATCH');
+  const clientIds=ids(request.getCellValue(schema.intake.fields['Converted Client']));
+  if(clientIds.length!==1)return hold('EXACT_RECONCILED_CLIENT_REQUIRED');
+  const allowed=new Set([`${requestId}|staffing-slots`]);
+  const exclusiveClaim=async key=>allowed.has(key)&&await assertClaim();
+  const slots=await fillMissingStaffingSlots(requestId,base,{exclusiveClaim,qa:envelope.qa===true});
+  const cf=operationsSchema.coverage.fields,choice=v=>v?.name||v||'';
+  const fields=['Source Client Intake','Client Record','Attendance Outcome','Time Verification Status','Record Environment'];
+  const rows=(await base.getTable(operationsSchema.coverage.id).selectRecordsAsync({fields:fields.map(f=>cf[f])})).records;
+  const ready=rows.filter(r=>ids(r.getCellValue(cf['Source Client Intake'])).includes(requestId)&&
+    JSON.stringify(ids(r.getCellValue(cf['Client Record'])))===JSON.stringify(clientIds)&&
+    choice(r.getCellValue(cf['Attendance Outcome']))==='Completed'&&choice(r.getCellValue(cf['Time Verification Status']))==='Verified'&&
+    r.getCellValue(cf['Record Environment'])===(envelope.qa?'QA / Test':'Production / Live'));
+  // Keep the existing synchronous native run bounded. Remaining exact IDs are
+  // visible for a later governed source event, never silently marked complete.
+  const finance=[];
+  for(const r of ready.slice(0,5)){
+    allowed.add(`${r.id}|finance-drafts`);
+    finance.push(await prepareFinanceDrafts(r.id,base,{exclusiveClaim,qa:envelope.qa===true,now:()=>new Date().toISOString()}));
+  }
+  return {disposition:'HANDOFFS_CHECKED',requestId,slots,finance,remainingCoverageIds:ready.slice(5).map(r=>r.id)};
+}
+
+return {runIntakeHandoffs};})();
+const {linkBookingEvidence}=(()=>{
+
+// Link the reviewed artifact itself. Never manufacture attendance, hours or a review.
+async function linkBookingEvidence(evidenceId, base) {
+  const tables = { ...schema, ...operationsSchema };
+  const readFields = {
+    evidence: ['Record Environment','Evidence ID','Evidence Type','Related Module','Related Object ID','Evidence Date','Verified','Source Provenance Verified','Provenance Disposition','File Link','Attachment','Notes','Worker Bookings','Coverage Requests','Workers','Candidates'],
+    bookings: ['Coverage Slot','Worker','Candidate','Booking Status','Record Environment','Evidence Records'],
+    coverage: ['Record Environment','Object ID'],
+    workers: ['Record Environment','Source Candidate Record','Team Member Number'],
+    candidates: ['Record Environment','Canonical Candidate Record','Promoted Worker','Team Member Number'],
+  };
+  const read = async (table, id) => {
+    const record = await base.getTable(tables[table].id).selectRecordAsync(id);
+    if (!record) return null;
+    return Object.fromEntries(readFields[table].map(name => [name, record.getCellValue(tables[table].fields[name])]));
+  };
+  const ids = value => (value || []).map(link => link.id).sort();
+  const select = value => value?.name || value || '';
+  const one = value => ids(value).length === 1 ? ids(value)[0] : null;
+  const hold = reason => ({ status: 'HOLD', reason, evidenceId });
+  async function plan() {
+    const evidence = await read('evidence', evidenceId);
+    if (!evidence) return hold('SOURCE_MISSING');
+    if (evidence.Verified !== true || evidence['Source Provenance Verified'] !== true ||
+      !['Accepted Source', 'Canonical Source', 'Verified'].includes(select(evidence['Provenance Disposition']))) return hold('SOURCE_NOT_REVIEWED');
+    if (select(evidence['Related Module']) !== 'Assignments Shifts' ||
+      !['Message', 'Screenshot', 'Homebase Proof', 'Operational Evidence', 'Gmail Source', 'Email / Message', 'Email', 'Gmail', 'Email Evidence', 'Source Document', 'Document / PDF', 'Other Verified Evidence'].includes(select(evidence['Evidence Type'])) ||
+      !(evidence['File Link'] || evidence.Attachment?.length)) return hold('SOURCE_ARTIFACT_REQUIRED');
+    const bookingId = one(evidence['Worker Bookings']);
+    const coverageId = one(evidence['Coverage Requests']);
+    if (!bookingId || !coverageId || evidence['Related Object ID'] !== bookingId) return hold('SOURCE_SCOPE_AMBIGUOUS');
+    const booking = await read('bookings', bookingId);
+    const coverage = await read('coverage', coverageId);
+    if (!booking || !coverage || one(booking['Coverage Slot']) !== coverageId ||
+      !ids(booking['Evidence Records']).includes(evidenceId)) return hold('BOOKING_SCOPE_MISMATCH');
+    if (!['Completed', 'Cancelled', 'Released', 'Replaced'].includes(select(booking['Booking Status']))) return hold('BOOKING_NOT_TERMINAL');
+    const workerIds = ids(booking.Worker), candidateIds = ids(booking.Candidate);
+    if (workerIds.length > 1 || candidateIds.length > 1 || (!workerIds.length && !candidateIds.length)) return hold('PERSON_AMBIGUOUS');
+    const worker = workerIds.length ? await read('workers', workerIds[0]) : null;
+    const candidate = candidateIds.length ? await read('candidates', candidateIds[0]) : null;
+    if ((workerIds.length && !worker) || (candidateIds.length && !candidate)) return hold('PERSON_MISSING');
+    if (candidate && ids(candidate['Canonical Candidate Record']).length) return hold('CANDIDATE_REDIRECT');
+    if (worker && candidate && (one(worker['Source Candidate Record']) !== candidateIds[0] ||
+      one(candidate['Promoted Worker']) !== workerIds[0] || !worker['Team Member Number'] ||
+      worker['Team Member Number'] !== candidate['Team Member Number'])) return hold('IDENTITY_MISMATCH');
+    const environment = select(evidence['Record Environment']);
+    if (!['Production / Live', 'QA / Test'].includes(environment) || [booking, coverage, worker, candidate].filter(Boolean).some(r => select(r['Record Environment']) !== environment)) return hold('ENVIRONMENT_MISMATCH');
+    const expected = { Workers: workerIds, Candidates: candidateIds };
+    for (const [field, wanted] of Object.entries(expected)) {
+      const current = ids(evidence[field]);
+      if (current.length && JSON.stringify(current) !== JSON.stringify(wanted)) return hold('EXISTING_PERSON_CONFLICT');
+    }
+    // Capture scalar snapshots now; Airtable record objects can otherwise reflect later changes.
+    const fingerprint = JSON.stringify([evidenceId, ...[evidence, booking, coverage, worker, candidate].map(r => r && Object.fromEntries(Object.entries(r).filter(([name]) => !['Workers', 'Candidates', 'Evidence Records'].includes(name))))]);
+    return { status: 'READY', evidence, expected, fingerprint, bookingId, coverageId };
+  }
+  const initial = await plan();
+  if (initial.status === 'HOLD') return initial;
+  const current = await plan();
+  if (current.status === 'HOLD') return current;
+  if (initial.fingerprint !== current.fingerprint) return hold('SOURCE_CHANGED');
+  const fields = {};
+  for (const [field, wanted] of Object.entries(current.expected)) {
+    if (JSON.stringify(ids(current.evidence[field])) !== JSON.stringify(wanted)) fields[schema.evidence.fields[field]] = wanted.map(id => ({ id }));
+  }
+  if (Object.keys(fields).length) await base.getTable(schema.evidence.id).updateRecordAsync(evidenceId, fields);
+  const readback = await plan();
+  if (readback.status === 'HOLD' || readback.fingerprint !== current.fingerprint) return hold('READBACK_REVIEW_REQUIRED');
+  if (Object.entries(current.expected).some(([field, wanted]) => JSON.stringify(ids(readback.evidence[field])) !== JSON.stringify(wanted))) return hold('LINK_READBACK_FAILED');
+  return { status: Object.keys(fields).length ? 'LINKED' : 'REPLAY_NO_WRITE', evidenceId, bookingId: current.bookingId, personIds: current.expected };
+}
+
+return {linkBookingEvidence};})();
+
+// Only source fields are hashed. Effects/reciprocal backlinks cannot wake loops.
+const eventSources = {
+  staffingSlots: { table: 'coverage', fields: ['Record Environment','Coverage Record Type','Source Client Intake','Client Record','Required Headcount','Source Event ID','Role','Shift Date','Start Time','End Time','Location','Assignment Sequence','Shift Block Sequence','Evidence Records'] },
+  financeDrafts: { table: 'coverage', fields: ['Record Environment','Coverage Record Type','Source Client Intake','Worker Records','Client Record','Attendance Outcome','Time Verification Status','Hours Evidence Verified','Verified Hours','Rate Evidence Status','Approved Worker Rate Snapshot','Approved Client Rate Snapshot','Shift Date','Role','End Time','Evidence Records'] },
+  bookingEvidence: { table: 'evidence', fields: ['Record Environment','Evidence ID','Evidence Type','Related Module','Related Object ID','Evidence Date','Verified','Source Provenance Verified','Provenance Disposition','File Link','Attachment','Notes','Worker Bookings','Coverage Requests'] },
+};
+async function sourceEventSnapshot(base, operation, recordId) {
+  const source=eventSources[operation];
+  if(!source||!/^rec[A-Za-z0-9]{14}$/.test(recordId||'')||base.id!=='appveHEw1HrXr8nD1')return null;
+  const table={...schema,...operationsSchema}[source.table];
+  const record=await base.getTable(table.id).selectRecordAsync(recordId);
+  if(!record)return null;
+  const canonical=value=>Array.isArray(value)?value.map(canonical).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))):value&&typeof value==='object'?(value.id?{id:value.id,...(value.url?{url:value.url}:{})}:value.name?value.name:value):value;
+  const snapshot=source.fields.map(name=>[name,canonical(record.getCellValue(table.fields[name]))]);
+  if(operation==='staffingSlots'){
+    const requests=record.getCellValue(table.fields['Source Client Intake'])||[];
+    if(requests.length===1){
+      const request=await base.getTable(schema.intake.id).selectRecordAsync(requests[0].id);
+      snapshot.push(['Request Authority',request?['Record Environment','Converted Client','CLI-01A Commercial / Service Authorization Gate'].map(name=>[name,canonical(request.getCellValue(schema.intake.fields[name]))]):null]);
+    }
+  }
+  if(operation!=='bookingEvidence'){
+    const linked=record.getCellValue(table.fields['Evidence Records'])||[];
+    const proof=[];
+    for(const link of [...linked].sort((a,b)=>a.id.localeCompare(b.id))){
+      const e=await base.getTable(schema.evidence.id).selectRecordAsync(link.id);
+      const fields=['Verified','Source Provenance Verified','Provenance Disposition','Related Object ID','File Link','Attachment','Notes','Coverage Requests','Client Intake'];
+      proof.push([link.id,e?fields.map(name=>[name,name==='Coverage Requests'?(e.getCellValue(schema.evidence.fields[name])||[]).some(x=>x.id===recordId):canonical(e.getCellValue(schema.evidence.fields[name]))]):null]);
+    }
+    snapshot.push(['Reviewed Source',proof]);
+  }else{
+    const linked=record.getCellValue(table.fields['Worker Bookings'])||[];
+    const bookings=[];
+    for(const link of [...linked].sort((a,b)=>a.id.localeCompare(b.id))){
+      const b=await base.getTable(operationsSchema.bookings.id).selectRecordAsync(link.id);
+      bookings.push([link.id,b?['Booking Status','Coverage Slot','Worker','Candidate','Record Environment'].map(name=>[name,canonical(b.getCellValue(operationsSchema.bookings.fields[name]))]):null]);
+    }
+    snapshot.push(['Booking Source',bookings]);
+  }
+  return snapshot;
+}
+async function runSourceEvent(envelope,base,assertClaim) {
+  const hold=code=>({status:'exception',code,recordIds:[envelope.recordId]});
+  if(envelope?.kind!=='operation'||envelope.lane!=='client'||!eventSources[envelope.operation])return hold('INVALID_SOURCE_EVENT');
+  if(typeof assertClaim!=='function'||!await assertClaim())return hold('EXCLUSIVE_NATIVE_CLAIM_REQUIRED');
+  const snapshot=await sourceEventSnapshot(base,envelope.operation,envelope.recordId);
+  if(!snapshot||JSON.stringify(snapshot)!==JSON.stringify(envelope.snapshot))return hold('SOURCE_VERSION_CHANGED');
+  const environment=snapshot.find(([name])=>name==='Record Environment')?.[1];
+  if(!['Production / Live','QA / Test'].includes(environment))return hold('ENVIRONMENT_MISMATCH');
+  const qa=environment==='QA / Test';
+  let effect;
+  if(envelope.operation==='bookingEvidence')effect=await linkBookingEvidence(envelope.recordId,base);
+  else {
+    let target=envelope.recordId;
+    if(envelope.operation==='staffingSlots'){
+      const links=snapshot.find(([name])=>name==='Source Client Intake')?.[1];
+      if(!Array.isArray(links)||links.length!==1)return hold('EXACT_REQUEST_REQUIRED');
+      target=links[0].id;
+    }
+    const key=`${target}|${envelope.operation==='staffingSlots'?'staffing-slots':'finance-drafts'}`;
+    const exclusiveClaim=async effectKey=>effectKey===key&&await assertClaim();
+    effect=await (envelope.operation==='staffingSlots'?fillMissingStaffingSlots:prepareFinanceDrafts)(target,base,{exclusiveClaim,qa});
+  }
+  if(effect.status==='HOLD'||effect.disposition==='HOLD')return {...hold(effect.reason),operationReadback:effect};
+  return {status:'done',code:effect.status||effect.disposition,recordIds:[envelope.recordId],operationReadback:effect};
+}
+
 // Inputs: receiptId and token, each mapped from the existing webhook body.
 const cfg=input.config();
 const lane="client";
@@ -465,7 +1236,14 @@ const claim=await call('claim');
 if(claim.skip){ output.set('status','REPLAY_NO_WRITE'); } else {
  if(claim.envelope.lane!==lane) throw new Error('LANE_MISMATCH');
  let result;
- try { result=await reconcile(claim.envelope,base); } catch(error) {
+ try { const assertClaim=async()=>{const proof=await call('assertClaim',{consumerToken:claim.consumerToken});return proof.held===true;};
+ result=claim.envelope.kind==='operation'?await runSourceEvent(claim.envelope,base,assertClaim):await reconcile(claim.envelope,base);
+ if(claim.envelope.kind==='operation')output.set('operationReadback',JSON.stringify(result.operationReadback||result));
+ else {
+ const handoff=await runIntakeHandoffs(claim.envelope,result,base,async()=>{const proof=await call('assertClaim',{consumerToken:claim.consumerToken});return proof.held===true;});
+ output.set('handoffReadback',JSON.stringify(handoff));
+ }
+ } catch(error) {
   await call('complete',{consumerToken:claim.consumerToken,status:'failed',code:'AIRTABLE_RECONCILIATION_FAILED'});
   throw new Error('AIRTABLE_RECONCILIATION_FAILED');
  }

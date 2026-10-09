@@ -1,0 +1,43 @@
+import test from 'node:test';import assert from 'node:assert/strict';import{executeReminder}from '../../automation/intake/agreement-reminders.mjs';
+const id='rec00000000000001',now='2026-10-04T15:00:00Z';
+function fixture(){let sends=0;const c={id,Email:'qa@example.invalid','Tracked Representation Agreement Link':'https://form.jotform.com/261558428456063?candidateapplicationId=TEST-CAN-001'},provider={candidateId:id,complete:true,effects:['initial','r1','r2'].map(step=>({step,key:`${id}|agreement|${step}`,outcome:'not_sent'}))},claims=new Map();const deps={readCandidate:async()=>structuredClone(c),readProvider:async()=>structuredClone(provider),now:()=>now,readApprovedPayload:async(_,step)=>({approved:true,candidateId:id,step,key:`${id}|agreement|${step}`,version:'approved-v1',recipient:c.Email,trackedLink:c['Tracked Representation Agreement Link'],body:'Approved invitation '+c['Tracked Representation Agreement Link']}),claimEffect:async key=>{if(claims.has(key))return {status:'unknown'};const claim={status:'claimed',key,claimId:'qa-claim'};claims.set(key,claim);return claim;},cancelClaim:async claim=>claims.set(claim.key,{status:'cancelled'}),markSending:async claim=>claims.get(claim.key)?.status==='claimed',sendApprovedPayload:async(p)=>{sends++;const effect=provider.effects.find(e=>e.key===p.key);Object.assign(effect,{outcome:'sent',sentAt:now,messageId:'qa-message',threadId:'qa-thread',recipient:p.recipient,payloadVersion:p.version,trackedLink:p.trackedLink});return{messageId:'qa-message',threadId:'qa-thread'};},markUnknown:async claim=>claims.set(claim.key,{status:'unknown'}),persistSendEvidence:async()=>({evidenceId:'rec00000000000002'}),markSent:async claim=>claims.set(claim.key,{status:'sent'}),writeCandidateTimestamp:async(_,field,value)=>{c[field]=value;},verifyCandidateTimestamp:async(_,field,value)=>c[field]===value};return{c,provider,claims,deps,sends:()=>sends};}
+test('reminder due send has independent provider/evidence/timestamp proof; replay cannot resend',async()=>{const f=fixture();assert.equal((await executeReminder(id,f.deps)).disposition,'SENT_VERIFIED');assert.equal(f.sends(),1);assert.equal((await executeReminder(id,f.deps)).disposition,'NOT_DUE');assert.equal(f.sends(),1);});
+test('reminder Signed/Declined stop and NY window prevent any external effect',async()=>{for(const status of ['Signed','Declined']){const f=fixture();f.c['Candidate Agreement Status']=status;assert.equal((await executeReminder(id,f.deps)).disposition,'STOP');assert.equal(f.sends(),0);}const f=fixture();f.deps.now=()=> '2026-10-04T23:00:00Z';assert.equal((await executeReminder(id,f.deps)).disposition,'OUTSIDE_WINDOW');assert.equal(f.sends(),0);});
+test('reminder immediate post-claim Signed reread cancels before send',async()=>{const f=fixture(),claim=f.deps.claimEffect;f.deps.claimEffect=async(...args)=>{const result=await claim(...args);f.c['Candidate Agreement Status']='Signed';return result;};assert.equal((await executeReminder(id,f.deps)).disposition,'STOP');assert.equal(f.sends(),0);});
+test('reminder uncertain send never blind retries',async()=>{const f=fixture();f.deps.sendApprovedPayload=async()=>{throw new Error('Uncertain timeout');};assert.equal((await executeReminder(id,f.deps)).reason,'PROVIDER_OUTCOME_UNCERTAIN');assert.equal((await executeReminder(id,f.deps)).reason,'EFFECT_ALREADY_CLAIMED_OR_UNCERTAIN');assert.equal(f.c['Agreement Initial Sent At'],undefined);});
+test('reminder provider route contradiction is held after send without timestamp certification',async()=>{const f=fixture(),send=f.deps.sendApprovedPayload;f.deps.sendApprovedPayload=async(...args)=>{const r=await send(...args);f.provider.effects[0].recipient='other@example.invalid';return r;};assert.equal((await executeReminder(id,f.deps)).reason,'PROVIDER_SEND_READBACK_UNCONFIRMED');assert.equal(f.c['Agreement Initial Sent At'],undefined);});
+test('reminder missing canonical timestamp reconciles provider proof without another send',async()=>{const f=fixture();Object.assign(f.provider.effects[0],{outcome:'sent',sentAt:now,messageId:'qa-message',threadId:'qa-thread',recipient:f.c.Email,payloadVersion:'approved-v1',trackedLink:f.c['Tracked Representation Agreement Link']});assert.equal((await executeReminder(id,f.deps)).disposition,'RECONCILED');assert.equal(f.c['Agreement Initial Sent At'],now);assert.equal(f.sends(),0);});
+test('reminder simultaneous invocations share one effect claim and send once',async()=>{const f=fixture();const results=await Promise.all([executeReminder(id,f.deps),executeReminder(id,f.deps)]);assert.equal(f.sends(),1);assert.equal(results.filter(r=>r.disposition==='SENT_VERIFIED').length,1);});
+test('reminder no governed executor or unapproved payload cannot send',async()=>{assert.equal((await executeReminder(id,{})).reason,'GOVERNED_EXECUTOR_REQUIRED');const f=fixture();f.deps.readApprovedPayload=async()=>({approved:false});assert.equal((await executeReminder(id,f.deps)).reason,'EXACT_APPROVED_TRACKED_PAYLOAD_REQUIRED');assert.equal(f.sends(),0);});
+test('reminder provider content/version mismatch cannot certify the send',async()=>{const f=fixture(),send=f.deps.sendApprovedPayload;f.deps.sendApprovedPayload=async(...args)=>{const r=await send(...args);f.provider.effects[0].payloadVersion='unapproved-v2';return r;};assert.equal((await executeReminder(id,f.deps)).reason,'PROVIDER_SEND_READBACK_UNCONFIRMED');assert.equal(f.c['Agreement Initial Sent At'],undefined);});
+for(const [name,mutate] of [
+ ['missing message',e=>delete e.messageId],
+ ['wrong tracked link',e=>e.trackedLink='https://example.invalid/other-person'],
+ ['unapproved version',e=>e.payloadVersion='unapproved-v2'],
+ ['wrong recipient',e=>e.recipient='other@example.invalid'],
+])for(const timestampPresent of [false,true])test(`reminder ${name} cannot ${timestampPresent?'start R1':'restore timestamp'}`,async()=>{
+ const f=fixture();const sentAt='2026-10-03T15:00:00Z';
+ Object.assign(f.provider.effects[0],{outcome:'sent',sentAt,messageId:'qa-message',threadId:'qa-thread',recipient:f.c.Email,payloadVersion:'approved-v1',trackedLink:f.c['Tracked Representation Agreement Link']});
+ if(timestampPresent)f.c['Agreement Initial Sent At']=sentAt;
+ mutate(f.provider.effects[0]);let evidenceWrites=0;f.deps.persistSendEvidence=async()=>{evidenceWrites++;return {evidenceId:'rec00000000000002'};};
+ assert.equal((await executeReminder(id,f.deps)).reason,'PROVIDER_SEND_READBACK_UNCONFIRMED');assert.equal(f.sends(),0);assert.equal(evidenceWrites,0);
+ assert.equal(f.c['Agreement Initial Sent At'],timestampPresent?sentAt:undefined);
+});
+test('reminder verified initial provider proof permits exactly one due R1',async()=>{
+ const f=fixture(),sentAt='2026-10-03T15:00:00Z';
+ Object.assign(f.provider.effects[0],{outcome:'sent',sentAt,messageId:'qa-initial',threadId:'qa-thread',recipient:f.c.Email,payloadVersion:'approved-v1',trackedLink:f.c['Tracked Representation Agreement Link']});
+ f.c['Agreement Initial Sent At']=sentAt;
+ const result=await executeReminder(id,f.deps);assert.equal(result.disposition,'SENT_VERIFIED');assert.equal(result.step,'r1');assert.equal(f.sends(),1);
+ assert.equal((await executeReminder(id,f.deps)).disposition,'NOT_DUE');assert.equal(f.sends(),1);
+});
+test('reminder prior source changed after claim cancels without sending R1',async()=>{
+ const f=fixture(),sentAt='2026-10-03T15:00:00Z';
+ Object.assign(f.provider.effects[0],{outcome:'sent',sentAt,messageId:'qa-initial',threadId:'qa-thread',recipient:f.c.Email,payloadVersion:'approved-v1',trackedLink:f.c['Tracked Representation Agreement Link']});
+ f.c['Agreement Initial Sent At']=sentAt;const claim=f.deps.claimEffect;
+ f.deps.claimEffect=async(...args)=>{const result=await claim(...args);f.provider.effects[0].trackedLink='https://example.invalid/changed';return result;};
+ assert.equal((await executeReminder(id,f.deps)).reason,'PROVIDER_SEND_READBACK_UNCONFIRMED');assert.equal(f.sends(),0);assert.equal(f.claims.get(`${id}|agreement|r1`).status,'cancelled');
+});
+test('reminder duplicate later effect invalidates the complete provider snapshot before initial send',async()=>{
+ const f=fixture();f.provider.effects.push({...f.provider.effects[2]});
+ assert.equal((await executeReminder(id,f.deps)).reason,'EXACT_EFFECT_READBACK_REQUIRED');assert.equal(f.sends(),0);assert.equal(f.claims.size,0);
+});
