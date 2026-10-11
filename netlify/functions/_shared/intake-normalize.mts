@@ -37,6 +37,37 @@ function address(value: any, areaOnly = false): string {
   return (areaOnly ? ['city', 'state', 'country'] : ['addr_line1', 'addr_line2', 'city', 'state', 'postal', 'country']).map(k => text(value[k])).filter(Boolean).join(', ');
 }
 
+// Jotform returns account-local created_at values without an offset. The first live
+// production Client canary on 2026-10-10 established that this JEF account is using
+// America/New_York: provider 12:33:23 reconciled to receipt 16:33:25Z. Convert that
+// wall-clock value explicitly instead of silently treating it as UTC. Offset-aware
+// provider timestamps remain authoritative as-is. DST gaps/invalid values fail closed.
+const JOTFORM_ACCOUNT_TIME_ZONE = 'America/New_York';
+function sourceEventTimestamp(value: unknown): string | null {
+  const date = text(value);
+  if (/^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(date) && !Number.isNaN(Date.parse(date))) return new Date(date).toISOString();
+  const match = date.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
+  if (!match) return null;
+  const target = match.slice(1).map(Number);
+  const targetUtc = Date.UTC(target[0], target[1] - 1, target[2], target[3], target[4], target[5]);
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: JOTFORM_ACCOUNT_TIME_ZONE,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  });
+  let instant = targetUtc;
+  for (let i = 0; i < 3; i++) {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).filter(p => p.type !== 'literal').map(p => [p.type, Number(p.value)]));
+    const observedUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+    const delta = targetUtc - observedUtc;
+    instant += delta;
+    if (delta === 0) break;
+  }
+  const check = Object.fromEntries(formatter.formatToParts(new Date(instant)).filter(p => p.type !== 'literal').map(p => [p.type, Number(p.value)]));
+  if (check.year !== target[0] || check.month !== target[1] || check.day !== target[2] || check.hour !== target[3] || check.minute !== target[4] || check.second !== target[5]) return null;
+  return new Date(instant).toISOString();
+}
+
 // Only provider-fetched answers are consumed here; never trust answers supplied by the caller.
 export function normalizeSubmission(lane: Lane, source: any, receivedAt: string) {
   if (typeof source?.id !== 'string' || !/^\d{16,22}$/.test(source.id)) throw new Error('INVALID_PROVIDER_SUBMISSION_ID');
@@ -69,9 +100,7 @@ export function normalizeSubmission(lane: Lane, source: any, receivedAt: string)
   // actual submitted answers are unchanged.
   const snapshot = { formId: source.form_id, submissionId: source.id, createdAt: source.created_at, updatedAt: source.updated_at || null, answers };
   const version = evidenceVersion(snapshot);
-  // Account-local timestamps are retained verbatim, never silently interpreted as UTC.
-  const date = text(source.created_at);
-  const sourceTimestamp = /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(date) && !Number.isNaN(Date.parse(date)) ? new Date(date).toISOString() : null;
+  const sourceTimestamp = sourceEventTimestamp(source.created_at);
   const english = text(a(14));
   const englishMap: Record<string, string> = { Basic: 'Basic', Intermediate: 'Intermediate', Conversational: 'Conversational', Advanced: 'Advanced', 'Fluent / Native': 'Fluent', Fluent: 'Fluent' };
   if (candidate && english && !englishMap[english]) issues.push('UNMAPPED_ENGLISH_LEVEL');
