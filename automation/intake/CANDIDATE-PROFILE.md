@@ -53,6 +53,33 @@ Master's Positions/Experience pages, retaining shared identity, geography,
 language, verification, consent and final optional CV capture. Hide empty pages
 and test both visibility and required rules in the actual builder.
 
+## Capacity and candidate burden
+
+The [published Jotform pricing](https://www.jotform.com/pricing/), checked on
+October 20, lists 250 fields per form for Bronze. The audited 54 existing
+elements plus this definition's 109 give a preliminary total of 163, leaving
+87 before layout elements or other changes. This supports keeping the current
+plan for this slice; it does not verify this account's entitlement, usage or
+the final builder count. Hidden elements still count toward form capacity.
+
+Evaluating `profileFieldState` gives these blueprint counts, excluding shared
+contact, geography, languages, consent, CV and layout. They describe the logical
+definition, not observed Jotform pages or completion times.
+
+| Selected roles and answers | Visible profile fields | Required profile answers |
+| --- | ---: | ---: |
+| Server, starting | 2 | 2 |
+| Server, independent; details later | 3 | 2 |
+| Server and Bartender independent; Front Desk starting | 6 | 4 |
+| Same three roles, Service and Bar/Coffee detail open | 14 | 4 |
+| Server, Banquet Server, Bartender, Barista, Line Cook, Sous Chef independent; details later | 10 | 7 |
+| Same six roles, all three family detail blocks open | 28 | 7 |
+
+These examples keep a brief required answer for every selected role. Opening
+optional detail adds no required profile answer. Other requires its title in
+addition to its experience answer. Live hidden/required behavior and mobile
+rendering remain release checks.
+
 ## Current evidence and limits
 
 Source baseline: `457dbaa4005169d3309d24dba9da9ebcd733d179`.
@@ -68,6 +95,14 @@ endpoint returned HTTP 401. Private conditions, notification recipients,
 integration wiring, field options and entitlement counters therefore remain
 unverified. No production QIDs are bound in this branch. Synthetic four-digit
 QIDs exist only in tests and must not be copied into a real release manifest.
+
+The October 17 browser attempt reached the public card form, titled
+`Staff Application x JEF Scouting` with `27 Questions`, then the Jotform login
+page. Those public labels are not a private configuration export or a complete
+element count. Secure sign-in was interrupted; no authenticated editor state
+was observed. No form edit, test submission or production mutation occurred.
+Resume private inspection after secure sign-in is available; do not repeat the
+same failed API credentials or infer that authentication succeeded.
 
 Existing form-version admission and q23/q34 history are untouched. No new form
 version may be published before its transport admission is compatible. PR38
