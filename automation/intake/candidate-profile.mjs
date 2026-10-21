@@ -168,11 +168,16 @@ function validManifest(manifest) {
   });
 }
 
+export function candidateProfileBindingHash(manifest) {
+  if (!validManifest(manifest)) throw new Error('UNBOUND_PROFILE_CONTRACT');
+  return hash(manifest);
+}
+
 // The envelope is the one fetched/claimed by the existing receipt executor.
 // This reader does not send, dispatch, activate, or write any canonical state.
 export function readCandidateProfile(envelope, manifest) {
   if (envelope?.protocol !== 'JEF-INTAKE-2' || envelope?.lane !== 'candidate' || envelope?.formId !== CANDIDATE_FORM_ID || envelope?.snapshot?.formId !== CANDIDATE_FORM_ID || envelope?.snapshot?.submissionId !== envelope?.submissionId) throw new Error('INVALID_PROFILE_SOURCE_CONTEXT');
-  if (!/^\d{16,22}$/.test(envelope.submissionId || '') || !/^[a-f0-9]{64}$/.test(envelope.version || '') || !envelope.snapshot.answers || typeof envelope.snapshot.answers !== 'object' || Array.isArray(envelope.snapshot.answers)) throw new Error('INVALID_PROFILE_SOURCE_CONTEXT');
+  if (!/^\d{16,22}$/.test(envelope.submissionId || '') || envelope.sourceKey !== `CANDIDATESRC|Jotform|${envelope.submissionId}` || !/^[a-f0-9]{64}$/.test(envelope.version || '') || !envelope.snapshot.answers || typeof envelope.snapshot.answers !== 'object' || Array.isArray(envelope.snapshot.answers)) throw new Error('INVALID_PROFILE_SOURCE_CONTEXT');
   if (!validManifest(manifest)) throw new Error('UNBOUND_PROFILE_CONTRACT');
   const definition = candidateProfileDefinition(), values = {}, issues = [];
   const fields = Object.fromEntries(definition.fields.map(f => [f.key, f]));

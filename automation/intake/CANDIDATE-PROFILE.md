@@ -3,8 +3,9 @@
 Implements the October 16 Candidate Master decision: all selected roles retain
 their own candidate-declared experience. The existing Master remains
 `261480775333056`. This branch prepares the definition, provider binding,
-conditional reader and canonical-field proposals. It does **not** edit the live
-form or wire a new production writer into the receipt executor.
+conditional reader, canonical-field proposals and a guarded native executor
+adaptation for local QA. It does **not** edit the live form or publish the
+adaptation to the production receipt executor.
 
 ## What is implemented
 
@@ -109,6 +110,104 @@ version may be published before its transport admission is compatible. PR38
 handles repeated answer occurrences; PR39 handles provider timestamps. This
 module does not duplicate either repair or claim they are deployed.
 
+## Paired form and automation preparation — October 21
+
+The form, source admission, conditional interpretation and canonical writes are
+one release. Publishing a new field layout while the current automation still
+expects its old structure is not an accepted intermediate state.
+
+`candidate-profile-executor.mjs` now supplies the scoped adaptation for the
+**existing** claimed Candidate writer:
+
+- A reviewed form version **and** exact bound manifest/hash are required for the
+  new profile. Existing V1 applications retain their original interpretation.
+  New profile answers under an old/unexpected version hold as source evidence.
+  Form-code and environment exceptions remain fatal. Other forms, including
+  Representation and Client Agreement branches, pass through unchanged.
+- A complete new role selection supplies the existing Target Role text summary
+  without treating the first role as primary. q34's retained V1 value cannot
+  become the new selection. An incomplete selection leaves that summary alone.
+- Role declarations use the existing Candidate Profile Items fields. Candidate
+  identity and reciprocal exact-source Evidence must already be resolved and
+  read back. The module creates no person, Worker, queue, trigger or message.
+- Managed Candidate-Entered / Proposed rows reconcile in place. Replay, lost
+  acknowledgement and partial write recovery do not create another role row.
+  Every write requires readback; failure cannot acknowledge DONE.
+- Human improvements, verified/reconciled facts, conflict flags, review notes,
+  duplicate rows, stale sources and competing submission streams hold only the
+  affected projection. Changing an Other title requires review.
+- Deselection updates the current preference flag in managed same-source
+  declarations, retaining experience, original Evidence and status. Incomplete
+  selections cannot withdraw other roles. Hidden branch values are filtered;
+  closing optional detail retains the earlier declaration and source history.
+
+Declarations are useful as candidate-reported facts, with their uncertainty.
+They do not require a founder interview for every row, and do not establish
+verified competence, exact availability, assignment readiness or commitment.
+Actual matching consumption must be demonstrated before release.
+
+### Adapt the observed native source, preserving its extensions
+
+```sh
+node scripts/prepare-candidate-profile-native.mjs \
+  --out /private/candidate-native-qa \
+  --native-script /private/current-observed-candidate.js \
+  --expected-native-sha REVIEWED_SHA256 \
+  --release /private/reviewed-candidate-release.json
+```
+
+The release JSON contains `formVersion`, `roleItemType`, `manifest` and
+`bindingHash`, supplied from the private export and reviewed crosswalk. No
+production manifest is supplied by this branch. `2.0` and four-digit QIDs in
+tests are **synthetic QA configuration**, not a selected published version.
+
+The offline compiler requires the exact reviewed native SHA256 and two unique
+source anchors; it refuses shape/hash drift or a second application. It embeds
+the new module, inserts version handling at entry and profile reconciliation
+after Candidate/Evidence readback, and preserves the existing runner and all
+other native branches. Node-only imports are removed from the native bundle.
+It parses the complete async output and emits a **QA artifact**, always reporting
+`releaseReady: false`. It makes no network calls and does not alter the checked-in
+generated scripts or the current transport/normalizer.
+
+October 21 readback of native `wflrZEVc6SWswOiVN`: deployed/valid, no differing
+deployed version returned; **39,192 characters**, UTF-8 SHA256
+`935f63612adf9baf2ff5bec416e9154a5e8ad31c365f274b9582d097322d9bfc`.
+This matches the October 16 observed source. The live form remains ENABLED with
+54 metadata elements and 230 submissions; this is not a private conditions export.
+
+### Verification and remaining limits
+
+The default suite includes the existing regressions and the new paired native
+execution cases. A second opt-in run uses the exact observed native source plus
+local copies of PR38's transport and PR39's normalizer, without merging either:
+
+October 21 validation: **102 default tests passed; 24 opt-in native/dependency
+tests passed**, including the full A→B→A case. `git diff --check` passed.
+`npm run typecheck` could not run because `tsc` is not installed in this checkout.
+No TypeScript transport/normalizer file is changed by this slice; the dependency
+typecheck and independent review remain release requirements.
+
+```sh
+JEF_PROFILE_TEST_NATIVE_SOURCE=/private/current-observed-candidate.js \
+JEF_PROFILE_TEST_TRANSPORT=/private/pr38-and-pr39/intake-transport.mts \
+  node --test tests/intake/candidate-profile-executor.test.mjs
+```
+
+The dependency directory must contain PR38's `intake-transport.mts` and PR39's
+`intake-normalize.mts`; the test does not download them. It proves simulated
+source fetch → receipt → exact native patch → Candidate/Evidence/Profile Item
+readback → completion, A→B→A as three source occurrences, consecutive replay,
+and America/New_York source-time conversion. This does not certify deployment.
+
+All provider bindings in these tests are synthetic. Current private conditions,
+required rules, option translations, email verification, private editing,
+notifications and integration delivery remain unverified. The Airtable writes
+use the existing sole claimed writer and reread before change/create; Airtable
+record APIs do not provide an atomic compare-and-swap against concurrent human
+edits. Independent review and bounded live QA remain required. No founder-hour
+savings are claimed from a simulation.
+
 ## Integration and release gates
 
 1. Obtain the current private form export and rollback snapshot; configure the
@@ -116,9 +215,9 @@ module does not duplicate either repair or claim they are deployed.
    permanent form ID, historical submissions, metadata and private edit links.
 2. Bind real QIDs and validate translations/options. Confirm Bronze's actual
    element limit against the complete resulting form, including retained fields.
-3. Reconcile the native script drift and pending receipt/timestamp releases.
-   Connect `readCandidateProfile` only inside the existing claimed Candidate
-   executor, after authoritative source fetch and successful identity resolution.
+3. Review the exact native adaptation and pending receipt/timestamp releases.
+   Keep PR38/39 as dependencies; this branch does not replace or deploy them.
+   Generate the native QA patch from the reviewed current source and real binding.
 4. Reconcile proposals against existing Candidate Profile Items before writes;
    stable keys are not an atomic claim or proof that a row is new. Preserve
    independent human improvements, explicit preference changes, old experience,
@@ -129,6 +228,26 @@ module does not duplicate either repair or claim they are deployed.
 6. Have a reviewer independent of the author assess the form and release; publish
    only the paired verified transport/native/form configuration. Preserve all
    sources and reconcile already accepted V2 entries if rollback is required.
+
+### Coordinated cutover and rollback — proposal, not executed
+
+1. Save private form settings, bindings, existing URLs/webhooks and the exact
+   native/transport versions. Complete isolated QA and independent review.
+2. Release the compatible reviewed PR38/39 transport work before admitting the
+   new form version. Use only the existing Candidate dispatch pause when needed;
+   allow claimed runs to finish and read back the pause/queue state.
+3. Install the reviewed native adaptation while the public form is still V1;
+   verify V1 compatibility first. Activate the paired fields/conditions/version
+   in the same existing Master only after those checks pass. Resume controlled
+   dispatch and verify one source through all existing canonical homes.
+4. For a defect, pause Candidate dispatch, restore the recorded V1 presentation
+   and prevent new V2 entry. Keep a compatible V2 consumer long enough to
+   reconcile already accepted sources. Do not blindly restore a V1-only script
+   over pending V2 receipts or delete Evidence/role declarations. Drain/review
+   those sources, then restore the exact prior native version if appropriate.
+
+The portal remains deferred. Barista Availability retirement remains a separate
+existing slice requiring all 17 historical sources and a complete route census.
 
 Tests here prove local binding/reading behavior and regression compatibility.
 They do not prove Jotform rendering, webhook delivery, provider email verification,
