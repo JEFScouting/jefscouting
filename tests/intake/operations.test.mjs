@@ -20,6 +20,33 @@ test('P2 existing conflicting slot blocks; reduced headcount never deletes prior
 test('P3 single exact verified slot creates drafts and reciprocal links; replay reuses all money objects',async()=>{const f=await completed(),r=await prepareFinanceDrafts(f.coverageId,f.b,ctx);assert.equal(r.disposition,'DRAFTS_PREPARED');const p=f.b.data.payroll.get(r.payrollId),i=f.b.data.invoices.get(r.invoiceId);assert.equal(p.Hours,11.5);assert.equal(p['Gross Pay'],230);assert.equal(p['Coverage Record ID Snapshot'],f.coverageId);assert.equal(i['Total Amount'],345);assert.equal(i['Invoice Status'].name,'Draft');assert.equal(p['Payment Authorized'],undefined);assert.equal(i['Send Authorized'],undefined);assert.equal(f.b.data.finance.get(r.financeId)['Operational Completion Verified'],undefined);const replay=await prepareFinanceDrafts(f.coverageId,f.b,ctx);assert.deepEqual(replay,r);for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);});
 for(const[name,edit]of [['projected hours',f=>f.b.data.coverage.get(f.coverageId)['Verified Hours']=null],['disputed time',f=>f.b.data.coverage.get(f.coverageId)['Time Verification Status']={name:'Disputed'}],['unreviewed Evidence',f=>f.b.data.evidence.get(f.evidenceId).Verified=false],['wrong source link',f=>f.b.data.evidence.get(f.evidenceId)['Coverage Requests']=[]],['unapproved rates',f=>f.b.data.coverage.get(f.coverageId)['Rate Evidence Status']={name:'Missing'}]])test('P3 '+name+' never creates money objects',async()=>{const f=await completed();edit(f);assert.equal((await prepareFinanceDrafts(f.coverageId,f.b,ctx)).disposition,'HOLD');for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,0);});
 test('P3 preserves existing aggregate payroll like SIBOS instead of duplicating or distributing hours',async()=>{const f=await completed(),id=f.b.seed('payroll',{'Payroll Cycle':'TEST-Existing aggregate','Workers':[{id:f.workerId}],'Client Record':[{id:f.clientId}],'Period Start':'2026-09-28','Period End':'2026-10-01',Hours:46.5,'Gross Pay':930});assert.equal((await prepareFinanceDrafts(f.coverageId,f.b,ctx)).reason,'EXISTING_PERIOD_AGGREGATE_REQUIRES_RECONCILIATION');assert.equal(f.b.data.payroll.size,1);assert.equal(f.b.data.payroll.get(id).Hours,46.5);assert.equal(f.b.data.invoices.size,0);});
+test('P3 overlapping worker aggregate without Client link holds and replays without a duplicate',async()=>{
+ const f=await completed(),id=f.b.seed('payroll',{'Payroll Cycle':'TEST-Unlinked aggregate','Workers':[{id:f.workerId}],'Period Start':'2026-09-28','Period End':'2026-10-01',Hours:46.5,'Gross Pay':744});
+ const before=structuredClone(f.b.data.payroll.get(id));
+ for(let replay=0;replay<2;replay++){
+  const r=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+  assert.equal(r.reason,'EXISTING_PERIOD_AGGREGATE_REQUIRES_RECONCILIATION');
+  assert.deepEqual(f.b.data.payroll.get(id),before);
+  assert.equal(f.b.data.payroll.size,1);
+  assert.equal(f.b.data.invoices.size,0);
+  assert.equal(f.b.data.finance.size,0);
+ }
+});
+test('P3 ambiguous historical Client links hold instead of duplicating a worker liability',async()=>{
+ const f=await completed(),other=f.b.seed('clients',{'Client Name':'[QA] Different Client'});
+ f.b.seed('payroll',{'Payroll Cycle':'TEST-Ambiguous aggregate','Workers':[{id:f.workerId}],'Client Record':[{id:f.clientId},{id:other}],'Period Start':'2026-09-28','Period End':'2026-10-01',Hours:46.5});
+ assert.equal((await prepareFinanceDrafts(f.coverageId,f.b,ctx)).reason,'EXISTING_PERIOD_AGGREGATE_REQUIRES_RECONCILIATION');
+ assert.equal(f.b.data.payroll.size,1);assert.equal(f.b.data.invoices.size,0);
+});
+test('P3 a single different known Client does not block an independently sourced slot',async()=>{
+ const f=await completed(),other=f.b.seed('clients',{'Client Name':'[QA] Different Client'});
+ f.b.seed('payroll',{'Payroll Cycle':'TEST-Different client aggregate','Workers':[{id:f.workerId}],'Client Record':[{id:other}],'Period Start':'2026-09-28','Period End':'2026-10-01',Hours:46.5});
+ const r=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.equal(r.disposition,'DRAFTS_PREPARED');
+ assert.equal(f.b.data.payroll.size,2);
+ const replay=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.deepEqual(replay,r);assert.equal(f.b.data.payroll.size,2);
+});
 test('P3 partial write failure recovers same payroll on replay',async()=>{const f=await completed();f.b.failNext='invoices:create';await assert.rejects(prepareFinanceDrafts(f.coverageId,f.b,ctx));assert.equal(f.b.data.payroll.size,1);assert.equal((await prepareFinanceDrafts(f.coverageId,f.b,ctx)).disposition,'DRAFTS_PREPARED');for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);});
 test('P2/P3 cannot write without claim or across production/QA boundary',async()=>{const f=await completed();for(const fn of [()=>fillMissingStaffingSlots(f.requestId,f.b,{}),()=>prepareFinanceDrafts(f.coverageId,f.b,{})])assert.equal((await fn()).reason,'EXCLUSIVE_NATIVE_CLAIM_REQUIRED');assert.equal((await fillMissingStaffingSlots(f.requestId,f.b,{exclusiveClaim:async()=>true})).reason,'FULL_COMMERCIAL_GATE_REQUIRED');assert.equal((await prepareFinanceDrafts(f.coverageId,f.b,{exclusiveClaim:async()=>true})).reason,'ENVIRONMENT_MISMATCH');});
 test('P2 lost exclusive claim prevents any slot effect',async()=>{const f=fixture();let checks=0;const r=await fillMissingStaffingSlots(f.requestId,f.b,{qa:true,exclusiveClaim:async()=>++checks===1});assert.equal(r.reason,'EXCLUSIVE_CLAIM_LOST');assert.equal(f.b.data.coverage.size,1);});
