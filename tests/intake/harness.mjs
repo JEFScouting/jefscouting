@@ -1,10 +1,12 @@
-import { schema } from '../../automation/intake/schema.mjs';
+import { schema as intakeSchema } from '../../automation/intake/schema.mjs';
+import { operationsSchema } from '../../automation/intake/operations-schema.mjs';
+const schema={...intakeSchema,...operationsSchema};
 export const F=schema;
 export class FakeBase {
   id='appveHEw1HrXr8nD1'; data={}; sequence=0; failNext=null;
   constructor(){ for(const t of Object.keys(schema))this.data[t]=new Map(); }
   seed(table,fields){const id='rec'+String(++this.sequence).padStart(14,'0');this.data[table].set(id,structuredClone(fields));this.derive(table,id);return id;}
-  derive(t,id){const f=this.data[t].get(id);if(t==='candidates')f['Record Environment']=String(f.Candidate||'').startsWith('[')||String(f['Object ID']||'').startsWith('TEST')?'QA / Test':'Production / Live';if(t==='clients')f['Record Environment']=String(f['Client Name']||'').startsWith('[')?'QA / Test':'Production / Live';if(t==='intake')f['Record Environment']=/^(TEST|QA-)/.test(f['Request ID']||'')?'QA / Test':'Production / Live';}
+  derive(t,id){const f=this.data[t].get(id);if(t==='candidates')f['Record Environment']=String(f.Candidate||'').startsWith('[')||String(f['Object ID']||'').startsWith('TEST')?'QA / Test':'Production / Live';if(t==='clients')f['Record Environment']=String(f['Client Name']||'').startsWith('[')?'QA / Test':'Production / Live';if(t==='intake')f['Record Environment']=/^(TEST|QA-)/.test(f['Request ID']||'')?'QA / Test':'Production / Live';if(['coverage','payroll','invoices','finance','workers'].includes(t)){const primary={coverage:'Coverage Request',payroll:'Payroll Cycle',invoices:'Invoice Number',finance:'Finance Item',workers:'Worker'}[t];f['Record Environment']=/^(TEST|QA-|\[)/.test(f[primary]||'')?'QA / Test':'Production / Live';}}
   record(t,id){if(!this.data[t].has(id))return null;return {id,getCellValue:fid=>{const name=Object.keys(schema[t].fields).find(k=>schema[t].fields[k]===fid);if(!name)throw new Error('Unknown field '+fid);return structuredClone(this.data[t].get(id)?.[name]??null);}};}
   getTable(tableId){const t=Object.keys(schema).find(t=>schema[t].id===tableId);if(!t)throw new Error('Unexpected table '+tableId);return {
     selectRecordsAsync:async()=>({records:[...this.data[t].keys()].map(id=>this.record(t,id))}),

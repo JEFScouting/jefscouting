@@ -4,14 +4,16 @@ import { handleIntake } from '../../netlify/functions/_shared/intake-transport.m
 import { digest } from '../../netlify/functions/_shared/intake-normalize.mts';
 import { FakeStore, source } from './harness.mjs';
 
-function setup() {
+function setup(lane = 'candidate', initial = source(lane)) {
   const store = new FakeStore(), sent = [], logs = [];
-  let provider = source('candidate');
+  let provider = initial;
   const config = {
     JOTFORM_API_KEY: 'test-provider-key',
     JOTFORM_ADMIN_SECRET: 'test-admin-key',
-    AIRTABLE_CANDIDATE_JOTFORM_WEBHOOK_URL: 'https://hooks.airtable.com/workflows/v1/genericWebhook/appveHEw1HrXr8nD1/test/candidate',
-    JEF_CANDIDATE_INTAKE_V2_ENABLED: 'true',
+    [`AIRTABLE_${lane.toUpperCase()}_JOTFORM_WEBHOOK_URL`]: `https://hooks.airtable.com/workflows/v1/genericWebhook/appveHEw1HrXr8nD1/test/${lane}`,
+    [`JEF_${lane.toUpperCase()}_INTAKE_V2_ENABLED`]: 'true',
+    JEF_REPRESENTATION_INTAKE_ENABLED: 'true',
+    JEF_CLIENT_AGREEMENT_INTAKE_ENABLED: 'true',
   };
   const deps = {
     store,
@@ -28,14 +30,14 @@ function setup() {
     const body = new FormData();
     body.set('submissionID', provider.id);
     body.set('formID', provider.form_id);
-    return new Request('https://jefscouting.com/api/candidate-jotform-webhook', { method: 'POST', body });
+    return new Request(`https://jefscouting.com/api/${lane}-jotform-webhook`, { method: 'POST', body });
   };
-  const deliver = () => handleIntake(request(), 'candidate', deps);
-  const control = (action, extra = {}) => handleIntake(new Request('https://jefscouting.com/api/candidate-jotform-webhook', {
+  const deliver = () => handleIntake(request(), lane, deps);
+  const control = (action, extra = {}) => handleIntake(new Request(`https://jefscouting.com/api/${lane}-jotform-webhook`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ ...sent.at(-1), action, ...extra }),
-  }), 'candidate', deps);
+  }), lane, deps);
   const complete = async () => {
     const claim = await (await control('claim')).json();
     assert.equal(claim.skip, false);
@@ -44,7 +46,7 @@ function setup() {
   return { store, sent, logs, deliver, complete, setProvider: value => { provider = value; } };
 }
 
-const receiptKeys = store => [...store.entries.keys()].filter(key => key.startsWith('receipt/candidate/'));
+const receiptKeys = store => [...store.entries.keys()].filter(key => key.startsWith('receipt/'));
 
 test('provider updated_at alone replays the same completed receipt', async () => {
   const x = setup();
@@ -106,3 +108,46 @@ test('first post-patch replay reuses an equivalent pre-patch legacy receipt', as
   assert.equal(x.sent.length, 1);
   assert.deepEqual(receiptKeys(x.store), [legacyKey]);
 });
+
+for (const [lane, formId, kind, prefix, signatureQid] of [
+  ['candidate', '261558428456063', 'representation', 'REPRESENTATIONSRC', '8'],
+  ['client', '262220234744045', 'clientAgreement', 'CLIENTAGREEMENTSRC', '14'],
+]) {
+  const agreement = () => ({ ...source(lane), form_id: formId });
+  test(`${kind} preserves source identity and semantic replay across metadata changes`, async () => {
+    const first = agreement(), x = setup(lane, first);
+    assert.equal((await x.deliver()).status, 202);
+    const stored = x.store.entries.get(receiptKeys(x.store)[0]).data.envelope;
+    assert.equal(stored.kind, kind);
+    assert.equal(stored.sourceKey, `${prefix}|Jotform|${first.id}`);
+    await x.complete();
+    const replay = structuredClone(first);
+    replay.updated_at = '2026-10-06 02:00:00';
+    x.setProvider(replay);
+    assert.equal((await x.deliver()).status, 200);
+    assert.equal(x.sent.length, 1);
+    assert.equal(receiptKeys(x.store).length, 1);
+    const changed = structuredClone(replay);
+    changed.answers[signatureQid] = { text: 'Signature', answer: 'https://www.jotform.com/uploads/qa/changed.png' };
+    x.setProvider(changed);
+    assert.equal((await x.deliver()).status, 202);
+    assert.equal(x.sent.length, 2);
+    assert.equal(receiptKeys(x.store).length, 2);
+  });
+  test(`${kind} migration reuses completed legacy receipt without another native effect`, async () => {
+    const first = agreement(), x = setup(lane, first);
+    assert.equal((await x.deliver()).status, 202);
+    await x.complete();
+    const stableKey = receiptKeys(x.store)[0], legacy = structuredClone(x.store.entries.get(stableKey));
+    legacy.data.envelope.version = digest(legacy.data.envelope.snapshot);
+    const legacyKey = `receipt/${lane}/${first.id}/${legacy.data.envelope.version}`;
+    x.store.entries.delete(stableKey);
+    x.store.entries.set(legacyKey, legacy);
+    const replay = structuredClone(first);
+    replay.updated_at = '2026-10-06 02:00:00';
+    x.setProvider(replay);
+    assert.equal((await x.deliver()).status, 200);
+    assert.equal(x.sent.length, 1);
+    assert.deepEqual(receiptKeys(x.store), [legacyKey]);
+  });
+}
