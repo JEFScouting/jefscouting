@@ -48,7 +48,14 @@ export async function prepareFinanceDrafts(coverageId,base,{exclusiveClaim,qa=fa
   if(pm.length>1||im.length>1||fm.length>1)return hold('DUPLICATE_FINANCE_IDENTITY');
   // An unlinked period aggregate might already represent this liability or
   // receivable. Preserve it for reconciliation; never create a per-slot copy.
-  if(payroll.some(r=>!pm.includes(r)&&ids(get(r,'payroll','Workers')).includes(plan.workerId)&&ids(get(r,'payroll','Client Record')).includes(plan.clientId)&&overlapping(r))||
+  // An overlapping liability with missing/ambiguous Client identity is not proof
+  // of a different client. Fail closed until Finance reconciles that aggregate.
+  const overlappingWorkerLiability=r=>{
+    if(pm.includes(r)||!ids(get(r,'payroll','Workers')).includes(plan.workerId)||!overlapping(r))return false;
+    const linkedClients=ids(get(r,'payroll','Client Record'));
+    return linkedClients.length!==1||linkedClients[0]===plan.clientId;
+  };
+  if(payroll.some(overlappingWorkerLiability)||
     invoices.some(r=>!im.includes(r)&&ids(get(r,'invoices','Client Record')).includes(plan.clientId)&&get(r,'invoices','Period Start')<=day&&get(r,'invoices','Period End')>=day))return hold('EXISTING_PERIOD_AGGREGATE_REQUIRES_RECONCILIATION');
   const p=pm[0],i=im[0],f=fm[0],hours=c['Verified Hours'],pay=cents(hours*c['Approved Worker Rate Snapshot']),bill=cents(hours*c['Approved Client Rate Snapshot']);
   if(f&&((ids(get(f,'finance','Payroll Cycle Records')).length&&JSON.stringify(ids(get(f,'finance','Payroll Cycle Records')))!==JSON.stringify(p?[p.id]:[]))||(ids(get(f,'finance','Invoice Record')).length&&JSON.stringify(ids(get(f,'finance','Invoice Record')))!==JSON.stringify(i?[i.id]:[]))))return hold('EXISTING_FINANCE_RELATIONSHIP_CONFLICT');
