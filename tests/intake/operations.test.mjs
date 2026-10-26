@@ -47,6 +47,19 @@ test('P3 a single different known Client does not block an independently sourced
  const replay=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
  assert.deepEqual(replay,r);assert.equal(f.b.data.payroll.size,2);
 });
+test('P3 exact replay does not rewrite unchanged finance drafts or coverage links',async()=>{
+ const f=await completed();let updates=0,creates=0;
+ const original=f.b.getTable.bind(f.b);
+ f.b.getTable=id=>{const table=original(id);return {...table,
+  updateRecordAsync:async(...args)=>{updates++;return table.updateRecordAsync(...args);},
+  createRecordAsync:async(...args)=>{creates++;return table.createRecordAsync(...args);}};};
+ const first=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.equal(first.disposition,'DRAFTS_PREPARED');
+ const before={updates,creates};
+ const replay=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.deepEqual(replay,first);assert.deepEqual({updates,creates},before);
+ for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);
+});
 test('P3 partial write failure recovers same payroll on replay',async()=>{const f=await completed();f.b.failNext='invoices:create';await assert.rejects(prepareFinanceDrafts(f.coverageId,f.b,ctx));assert.equal(f.b.data.payroll.size,1);assert.equal((await prepareFinanceDrafts(f.coverageId,f.b,ctx)).disposition,'DRAFTS_PREPARED');for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);});
 test('P2/P3 cannot write without claim or across production/QA boundary',async()=>{const f=await completed();for(const fn of [()=>fillMissingStaffingSlots(f.requestId,f.b,{}),()=>prepareFinanceDrafts(f.coverageId,f.b,{})])assert.equal((await fn()).reason,'EXCLUSIVE_NATIVE_CLAIM_REQUIRED');assert.equal((await fillMissingStaffingSlots(f.requestId,f.b,{exclusiveClaim:async()=>true})).reason,'FULL_COMMERCIAL_GATE_REQUIRED');assert.equal((await prepareFinanceDrafts(f.coverageId,f.b,{exclusiveClaim:async()=>true})).reason,'ENVIRONMENT_MISMATCH');});
 test('P2 lost exclusive claim prevents any slot effect',async()=>{const f=fixture();let checks=0;const r=await fillMissingStaffingSlots(f.requestId,f.b,{qa:true,exclusiveClaim:async()=>++checks===1});assert.equal(r.reason,'EXCLUSIVE_CLAIM_LOST');assert.equal(f.b.data.coverage.size,1);});
