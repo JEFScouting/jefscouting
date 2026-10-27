@@ -39,7 +39,7 @@ export async function prepareFinanceDrafts(coverageId,base,{exclusiveClaim,qa=fa
   if(!/^\d{4}-\d{2}-\d{2}$/.test(day||'')||!c.Role)return hold('EXACT_PERIOD_ROLE_REQUIRED');
   if(!/(Z|[+-]\d{2}:\d{2})$/.test(c['End Time']||'')||!Number.isFinite(Date.parse(c['End Time']))||!Number.isFinite(Date.parse(now()))||Date.parse(c['End Time'])>Date.parse(now()))return hold('SHIFT_NOT_EVIDENCED_AS_ENDED');
   for(const id of plan.evidenceIds){const e=await read('evidence',id);if(!e||get(e,'evidence','Verified')!==true||get(e,'evidence','Source Provenance Verified')!==true||choice(get(e,'evidence','Provenance Disposition'))!=='Accepted Source'||!ids(get(e,'evidence','Coverage Requests')).includes(coverageId))return hold('EXACT_REVIEWED_SOURCE_EVIDENCE_REQUIRED');evidenceVersions.set(id,evidenceVersion(e));}
-  const payroll=await all('payroll',['Object ID','Workers','Client Record','Period Start','Period End','Hours','Rate','Gross Pay','Coverage Requests','Coverage Record ID Snapshot','Worker Payment Status']);
+  const payroll=await all('payroll',['Object ID','Workers','LEGACY — Worker Records — DO NOT USE','Client Record','Period Start','Period End','Hours','Rate','Gross Pay','Coverage Requests','Coverage Record ID Snapshot','Worker Payment Status']);
   const invoices=await all('invoices',['Client Record','Period Start','Period End','Coverage Requests','Invoice Status','Billable Hours','Bill Rate','Total Amount']);
   const finance=await all('finance',['Coverage Requests','Closeout Coverage Record ID Snapshot','Payroll Cycle Records','Invoice Record','Closeout Disposition']);
   const overlapping=r=>get(r,'payroll','Period Start')<=day&&get(r,'payroll','Period End')>=day;
@@ -52,7 +52,13 @@ export async function prepareFinanceDrafts(coverageId,base,{exclusiveClaim,qa=fa
   // An overlapping liability with missing/ambiguous Client identity is not proof
   // of a different client. Fail closed until Finance reconciles that aggregate.
   const overlappingWorkerLiability=r=>{
-    if(pm.includes(r)||!ids(get(r,'payroll','Workers')).includes(plan.workerId)||!overlapping(r))return false;
+    if(pm.includes(r)||!overlapping(r))return false;
+    // Two reciprocal relationships coexist in canonical Airtable:
+    // Payroll.Workers -> Workers.LEGACY — Payroll Cycle Records;
+    // Payroll.LEGACY — Worker Records -> Workers.Payroll Cycles.
+    // Read both for overlap safety; never mutate the legacy relationship.
+    const linkedWorkers=new Set([...ids(get(r,'payroll','Workers')),...ids(get(r,'payroll','LEGACY — Worker Records — DO NOT USE'))]);
+    if(!linkedWorkers.has(plan.workerId))return false;
     const linkedClients=ids(get(r,'payroll','Client Record'));
     return linkedClients.length!==1||linkedClients[0]===plan.clientId;
   };
