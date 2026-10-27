@@ -94,3 +94,20 @@ test('P3 source correction after payroll stops subsequent drafts and replay reus
  const payrollId=[...f.b.data.payroll.keys()][0];const r=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
  assert.equal(r.payrollId,payrollId);for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);
 });
+
+test('P3 legacy-only reciprocal worker liability blocks overlap and replay without writes',async()=>{
+ const f=await completed(),id=f.b.seed('payroll',{
+  'Payroll Cycle':'TEST-Legacy-only liability',
+  'LEGACY — Worker Records — DO NOT USE':[{id:f.workerId}],
+  'Period Start':'2026-09-28','Period End':'2026-10-01',Hours:46.5,'Gross Pay':744
+ });
+ const before=structuredClone(f.b.data.payroll.get(id));
+ for(let j=0;j<2;j++){
+  const r=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+  assert.equal(r.reason,'EXISTING_PERIOD_AGGREGATE_REQUIRES_RECONCILIATION');
+  assert.deepEqual(f.b.data.payroll.get(id),before);
+  assert.equal(f.b.data.payroll.size,1);
+  assert.equal(f.b.data.invoices.size,0);
+  assert.equal(f.b.data.finance.size,0);
+ }
+});
