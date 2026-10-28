@@ -111,3 +111,22 @@ test('P3 legacy-only reciprocal worker liability blocks overlap and replay witho
   assert.equal(f.b.data.finance.size,0);
  }
 });
+
+for(const [field,initial,changed] of [
+ ['Break Hours',0,0.5],
+ ['Client / Supervisor Confirmed Hours',11.5,10.5],
+ ['Tips / Breaks / Compensation Notes','No unpaid break','Unpaid break disputed']
+])test('P3 time source drift in '+field+' cannot create stale money drafts',async()=>{
+ const f=await completed();f.b.data.coverage.get(f.coverageId)[field]=initial;
+ let claims=0;
+ await assert.rejects(prepareFinanceDrafts(f.coverageId,f.b,{...ctx,exclusiveClaim:async()=>{
+  if(++claims===2)f.b.data.coverage.get(f.coverageId)[field]=changed;
+  return true;
+ }}),/COVERAGE_CHANGED_DURING_WRITE/);
+ for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,0);
+ f.b.data.coverage.get(f.coverageId)[field]=initial;
+ const first=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ const replay=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.deepEqual(replay,first);
+ for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);
+});
