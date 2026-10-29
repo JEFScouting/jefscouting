@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {FakeBase} from './harness.mjs';import {fillMissingStaffingSlots} from '../../automation/intake/coverage-slots.mjs';import {prepareFinanceDrafts} from '../../automation/intake/finance-drafts.mjs';
+import {FakeBase,F} from './harness.mjs';import {fillMissingStaffingSlots} from '../../automation/intake/coverage-slots.mjs';import {prepareFinanceDrafts} from '../../automation/intake/finance-drafts.mjs';
 const ctx={qa:true,exclusiveClaim:async()=>true};
 import {runIntakeHandoffs} from '../../automation/intake/handoff-runner.mjs';
 test('existing Client claim runs exact sourced slot and verified financial handoffs, with replay reuse',async()=>{
@@ -128,5 +128,26 @@ for(const [field,initial,changed] of [
  const first=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
  const replay=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
  assert.deepEqual(replay,first);
+ for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);
+});
+
+for(const [name,mutate,restore,reason] of [
+ ['Evidence approval revoked',f=>{f.b.data.evidence.get(f.evidenceId).Verified=false;},f=>{f.b.data.evidence.get(f.evidenceId).Verified=true;},'SOURCE_EVIDENCE_CHANGED_AFTER_WRITE'],
+ ['compensable break changed',f=>{f.b.data.coverage.get(f.coverageId)['Break Hours']=0.5;},f=>{f.b.data.coverage.get(f.coverageId)['Break Hours']=null;},'COVERAGE_CHANGED_AFTER_WRITE']
+])test('P3 post-write source drift: '+name+' cannot report prepared drafts',async()=>{
+ const f=await completed(),original=f.b.getTable.bind(f.b);let injected=0;
+ f.b.getTable=id=>{const table=original(id);return {...table,updateRecordAsync:async(recordId,fields)=>{
+  const result=await table.updateRecordAsync(recordId,fields);
+  if(id===F.coverage.id&&recordId===f.coverageId&&injected++===0)mutate(f);
+  return result;
+ }};};
+ await assert.rejects(prepareFinanceDrafts(f.coverageId,f.b,ctx),new RegExp(reason));
+ assert.equal(injected,1);
+ for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);
+ restore(f);
+ const recovered=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.equal(recovered.disposition,'DRAFTS_PREPARED');
+ const replay=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.deepEqual(replay,recovered);
  for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);
 });
