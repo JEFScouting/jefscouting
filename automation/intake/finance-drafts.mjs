@@ -86,5 +86,18 @@ export async function prepareFinanceDrafts(coverageId,base,{exclusiveClaim,qa=fa
   await upsert('payroll',await read('payroll',payrollId),{'Invoices':union(await read('payroll',payrollId),'payroll','Invoices',[invoiceId]),'Finance Control':union(await read('payroll',payrollId),'payroll','Finance Control',[financeId])});
   await upsert('invoices',await read('invoices',invoiceId),{'Finance Control':union(await read('invoices',invoiceId),'invoices','Finance Control',[financeId])});
   await upsert('coverage',latest,{'Payroll Cycle Link':[{id:payrollId}],'Invoice Link':[{id:invoiceId}],'Finance Control Records':[{id:financeId}]});
+  // The last reciprocal-link write is also asynchronous. Do not report a
+  // successful handoff if source time or Evidence changed during that effect.
+  // A failed final check leaves recoverable drafts, never a release/send.
+  if(!await exclusiveClaim(`${coverageId}|finance-drafts`))throw new Error('EXCLUSIVE_CLAIM_LOST');
+  const finalCoverage=await read('coverage',coverageId);
+  if(!finalCoverage||JSON.stringify(immutableSource(finalCoverage))!==immutableBaseline)throw new Error('COVERAGE_CHANGED_AFTER_WRITE');
+  for(const id of plan.evidenceIds){
+    const e=await read('evidence',id);
+    if(!e||get(e,'evidence','Verified')!==true||get(e,'evidence','Source Provenance Verified')!==true||
+      choice(get(e,'evidence','Provenance Disposition'))!=='Accepted Source'||
+      !ids(get(e,'evidence','Coverage Requests')).includes(coverageId)||
+      evidenceVersion(e)!==evidenceVersions.get(id))throw new Error('SOURCE_EVIDENCE_CHANGED_AFTER_WRITE');
+  }
   return {disposition:'DRAFTS_PREPARED',coverageId,payrollId,invoiceId,financeId,protectedEffects:false};
 }
