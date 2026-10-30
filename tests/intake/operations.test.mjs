@@ -151,3 +151,33 @@ for(const [name,mutate,restore,reason] of [
  assert.deepEqual(replay,recovered);
  for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,1);
 });
+
+test('P3 same-client same-day independently evidenced slots prepare separate drafts with exact replay',async()=>{
+ const f=await completed(),first=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.equal(first.disposition,'DRAFTS_PREPARED');
+ const worker2=f.b.seed('workers',{'Worker':'TEST-Independent Worker'});
+ const source=structuredClone(f.b.data.coverage.get(f.coverageId));
+ delete source['Payroll Cycle Link'];delete source['Invoice Link'];delete source['Finance Control Records'];
+ const slot2=f.b.seed('coverage',{...source,'Coverage Request':'TEST-Independent Same-Day Slot','Worker Records':[{id:worker2}],'Evidence Records':[]});
+ const evidence2=f.b.seed('evidence',{'Evidence ID':'TEST-SECOND-SLOT-TIME',Verified:true,'Source Provenance Verified':true,'Provenance Disposition':{name:'Accepted Source'},'Coverage Requests':[{id:slot2}]});
+ f.b.data.coverage.get(slot2)['Evidence Records']=[{id:evidence2}];
+ const second=await prepareFinanceDrafts(slot2,f.b,ctx);
+ assert.equal(second.disposition,'DRAFTS_PREPARED');
+ assert.notEqual(second.invoiceId,first.invoiceId);
+ assert.notEqual(second.payrollId,first.payrollId);
+ assert.deepEqual(await prepareFinanceDrafts(slot2,f.b,ctx),second);
+ assert.deepEqual(await prepareFinanceDrafts(f.coverageId,f.b,ctx),first);
+ for(const t of ['payroll','invoices','finance'])assert.equal(f.b.data[t].size,2);
+});
+test('P3 unlinked same-client same-day historical invoice still holds without duplicate drafts',async()=>{
+ const f=await completed(),id=f.b.seed('invoices',{'Invoice Number':'TEST-Unlinked Historical Invoice','Client Record':[{id:f.clientId}],'Period Start':'2026-10-01','Period End':'2026-10-01','Total Amount':345});
+ const before=structuredClone(f.b.data.invoices.get(id));
+ for(let replay=0;replay<2;replay++){
+  const r=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+  assert.equal(r.reason,'EXISTING_PERIOD_AGGREGATE_REQUIRES_RECONCILIATION');
+  assert.deepEqual(f.b.data.invoices.get(id),before);
+  assert.equal(f.b.data.invoices.size,1);
+  assert.equal(f.b.data.payroll.size,0);
+  assert.equal(f.b.data.finance.size,0);
+ }
+});
