@@ -181,3 +181,35 @@ test('P3 unlinked same-client same-day historical invoice still holds without du
   assert.equal(f.b.data.finance.size,0);
  }
 });
+
+for(const [name,period] of [
+ ['missing start with overlapping end',{'Period End':'2026-10-01'}],
+ ['missing end with overlapping start',{'Period Start':'2026-09-28'}],
+ ['both endpoints missing',{}],
+ ['contradictory inverted endpoints',{'Period Start':'2026-10-02','Period End':'2026-09-30'}]
+])test('P3 ambiguous historical worker payroll '+name+' holds without duplicate effects',async()=>{
+ const f=await completed(),id=f.b.seed('payroll',{'Payroll Cycle':'TEST-Partial Period Liability','Workers':[{id:f.workerId}],'Client Record':[{id:f.clientId}],Hours:11.5,'Gross Pay':230,...period});
+ const before=structuredClone(f.b.data.payroll.get(id));
+ for(let replay=0;replay<2;replay++){
+  const result=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+  assert.equal(result.reason,'EXISTING_PERIOD_AGGREGATE_REQUIRES_RECONCILIATION');
+  assert.deepEqual(f.b.data.payroll.get(id),before);
+  assert.equal(f.b.data.payroll.size,1);
+  assert.equal(f.b.data.invoices.size,0);
+  assert.equal(f.b.data.finance.size,0);
+ }
+});
+for(const [name,period] of [
+ ['known prior end',{'Period End':'2026-09-30'}],
+ ['known future start',{'Period Start':'2026-10-02'}]
+])test('P3 disjoint historical worker payroll '+name+' allows exact replay',async()=>{
+ const f=await completed();
+ f.b.seed('payroll',{'Payroll Cycle':'TEST-Disjoint Partial Period','Workers':[{id:f.workerId}],'Client Record':[{id:f.clientId}],Hours:11.5,'Gross Pay':230,...period});
+ const first=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.equal(first.disposition,'DRAFTS_PREPARED');
+ const replay=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.deepEqual(replay,first);
+ assert.equal(f.b.data.payroll.size,2);
+ assert.equal(f.b.data.invoices.size,1);
+ assert.equal(f.b.data.finance.size,1);
+});
