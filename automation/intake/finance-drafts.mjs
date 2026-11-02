@@ -44,7 +44,6 @@ export async function prepareFinanceDrafts(coverageId,base,{exclusiveClaim,qa=fa
   const payroll=await all('payroll',['Object ID','Workers','LEGACY — Worker Records — DO NOT USE','Client Record','Period Start','Period End','Hours','Rate','Gross Pay','Coverage Requests','Coverage Record ID Snapshot','Worker Payment Status']);
   const invoices=await all('invoices',['Client Record','Period Start','Period End','Coverage Requests','Invoice Status','Billable Hours','Bill Rate','Total Amount']);
   const finance=await all('finance',['Coverage Requests','Closeout Coverage Record ID Snapshot','Payroll Cycle Records','Invoice Record','Closeout Disposition']);
-  const overlapping=r=>get(r,'payroll','Period Start')<=day&&get(r,'payroll','Period End')>=day;
   const pm=payroll.filter(r=>ids(get(r,'payroll','Coverage Requests')).includes(coverageId)||get(r,'payroll','Coverage Record ID Snapshot')===coverageId||get(r,'payroll','Object ID')===`${qa?'TEST-':''}P3-PAYROLL|${coverageId}`);
   const im=invoices.filter(r=>ids(get(r,'invoices','Coverage Requests')).includes(coverageId));
   const fm=finance.filter(r=>ids(get(r,'finance','Coverage Requests')).includes(coverageId)||get(r,'finance','Closeout Coverage Record ID Snapshot')===coverageId);
@@ -54,15 +53,21 @@ export async function prepareFinanceDrafts(coverageId,base,{exclusiveClaim,qa=fa
   // An overlapping liability with missing/ambiguous Client identity is not proof
   // of a different client. Fail closed until Finance reconciles that aggregate.
   const overlappingWorkerLiability=r=>{
-    if(pm.includes(r)||!overlapping(r))return false;
-    // Two reciprocal relationships coexist in canonical Airtable:
-    // Payroll.Workers -> Workers.LEGACY — Payroll Cycle Records;
-    // Payroll.LEGACY — Worker Records -> Workers.Payroll Cycles.
-    // Read both for overlap safety; never mutate the legacy relationship.
+    if(pm.includes(r))return false;
+    // Both canonical Worker-Payroll reciprocal links must be checked.
     const linkedWorkers=new Set([...ids(get(r,'payroll','Workers')),...ids(get(r,'payroll','LEGACY — Worker Records — DO NOT USE'))]);
     if(!linkedWorkers.has(plan.workerId))return false;
     const linkedClients=ids(get(r,'payroll','Client Record'));
-    return linkedClients.length!==1||linkedClients[0]===plan.clientId;
+    if(linkedClients.length===1&&linkedClients[0]!==plan.clientId)return false;
+    // Missing or contradictory dates cannot establish a disjoint liability.
+    // A known prior end or future start can, even if the other date is absent.
+    const start=get(r,'payroll','Period Start'),end=get(r,'payroll','Period End');
+    const validDate=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v);
+    if((start!=null&&!validDate(start))||(end!=null&&!validDate(end)))return true;
+    if(validDate(start)&&validDate(end)&&start>end)return true;
+    if(validDate(start)&&start>day)return false;
+    if(validDate(end)&&end<day)return false;
+    return true;
   };
   // A different invoice already linked to a different exact Coverage slot is
   // not an unsourced period aggregate. Hold only unlinked overlapping invoices;
