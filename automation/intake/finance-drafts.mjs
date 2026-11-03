@@ -69,11 +69,22 @@ export async function prepareFinanceDrafts(coverageId,base,{exclusiveClaim,qa=fa
     if(validDate(end)&&end<day)return false;
     return true;
   };
+  // Unlinked historical invoices with unknown or inverted dates may cover this slot.
+  // Fail closed unless a known endpoint proves the period disjoint.
+  const invoicePeriodMayOverlap=r=>{
+    const start=get(r,'invoices','Period Start'),end=get(r,'invoices','Period End');
+    const validDate=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v);
+    if((start!=null&&!validDate(start))||(end!=null&&!validDate(end)))return true;
+    if(validDate(start)&&validDate(end)&&start>end)return true;
+    if(validDate(start)&&start>day)return false;
+    if(validDate(end)&&end<day)return false;
+    return true;
+  };
   // A different invoice already linked to a different exact Coverage slot is
   // not an unsourced period aggregate. Hold only unlinked overlapping invoices;
   // preserve duplicate detection for this exact slot through im above.
   if(payroll.some(overlappingWorkerLiability)||
-    invoices.some(r=>!im.includes(r)&&ids(get(r,'invoices','Coverage Requests')).length===0&&ids(get(r,'invoices','Client Record')).includes(plan.clientId)&&get(r,'invoices','Period Start')<=day&&get(r,'invoices','Period End')>=day))return hold('EXISTING_PERIOD_AGGREGATE_REQUIRES_RECONCILIATION');
+    invoices.some(r=>!im.includes(r)&&ids(get(r,'invoices','Coverage Requests')).length===0&&ids(get(r,'invoices','Client Record')).includes(plan.clientId)&&invoicePeriodMayOverlap(r)))return hold('EXISTING_PERIOD_AGGREGATE_REQUIRES_RECONCILIATION');
   const p=pm[0],i=im[0],f=fm[0],hours=c['Verified Hours'],pay=cents(hours*c['Approved Worker Rate Snapshot']),bill=cents(hours*c['Approved Client Rate Snapshot']);
   if(f&&((ids(get(f,'finance','Payroll Cycle Records')).length&&JSON.stringify(ids(get(f,'finance','Payroll Cycle Records')))!==JSON.stringify(p?[p.id]:[]))||(ids(get(f,'finance','Invoice Record')).length&&JSON.stringify(ids(get(f,'finance','Invoice Record')))!==JSON.stringify(i?[i.id]:[]))))return hold('EXISTING_FINANCE_RELATIONSHIP_CONFLICT');
   const conflict=(r,t,values)=>r&&Object.entries(values).some(([k,v])=>{const current=get(r,t,k);return current!==null&&current!==undefined&&current!==''&&(Array.isArray(v)?ids(current).length>0&&JSON.stringify(ids(current).sort())!==JSON.stringify(ids(v).sort()):JSON.stringify(current)!==JSON.stringify(v));});
