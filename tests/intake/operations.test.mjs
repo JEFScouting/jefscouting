@@ -213,3 +213,42 @@ for(const [name,period] of [
  assert.equal(f.b.data.invoices.size,1);
  assert.equal(f.b.data.finance.size,1);
 });
+
+for(const [name,period] of [
+ ['missing start',{'Period End':'2026-10-01'}],
+ ['missing end',{'Period Start':'2026-10-01'}],
+ ['both bounds missing',{}],
+ ['inverted bounds',{'Period Start':'2026-10-02','Period End':'2026-09-30'}],
+])test('P3 ambiguous unlinked historical invoice '+name+' holds without duplicate financial drafts on replay',async()=>{
+ const f=await completed(),id=f.b.seed('invoices',{
+  'Invoice Number':'TEST-Unlinked historical invoice',
+  'Client Record':[{id:f.clientId}],...period
+ });
+ const before=structuredClone(f.b.data.invoices.get(id));
+ for(let attempt=0;attempt<2;attempt++){
+  const r=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+  assert.equal(r.reason,'EXISTING_PERIOD_AGGREGATE_REQUIRES_RECONCILIATION');
+  assert.deepEqual(f.b.data.invoices.get(id),before);
+  assert.equal(f.b.data.payroll.size,0);
+  assert.equal(f.b.data.invoices.size,1);
+  assert.equal(f.b.data.finance.size,0);
+ }
+});
+for(const [name,period] of [
+ ['prior end',{'Period End':'2026-09-30'}],
+ ['future start',{'Period Start':'2026-10-02'}],
+])test('P3 unlinked historical invoice with proven '+name+' allows independently evidenced slot and exact replay',async()=>{
+ const f=await completed(),id=f.b.seed('invoices',{
+  'Invoice Number':'TEST-Disjoint historical invoice',
+  'Client Record':[{id:f.clientId}],...period
+ });
+ const before=structuredClone(f.b.data.invoices.get(id));
+ const first=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.equal(first.disposition,'DRAFTS_PREPARED');
+ const replay=await prepareFinanceDrafts(f.coverageId,f.b,ctx);
+ assert.deepEqual(replay,first);
+ assert.deepEqual(f.b.data.invoices.get(id),before);
+ assert.equal(f.b.data.payroll.size,1);
+ assert.equal(f.b.data.invoices.size,2);
+ assert.equal(f.b.data.finance.size,1);
+});
